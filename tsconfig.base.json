@@ -15,7 +15,6 @@
     "noImplicitOverride": true,
     "noFallthroughCasesInSwitch": true,
     "noUnusedLocals": true,
-    "noUnusedParameters": true,
-    "types": ["node"]
+    "noUnusedParameters": true
   }
 }
