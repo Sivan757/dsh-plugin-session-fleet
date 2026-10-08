@@ -1,0 +1,13 @@
+# Optional Session Fleet over the shipped Web composition, which carries none
+# of these rows. The fleet tools expose Host-wide session discovery, reading,
+# creation, and cross-session delivery to the model; keep the capability
+# explicitly opt-in per profile.
+
+- insert:
+    - id: tool-session-fleet
+      name: 'dsh-plugin-session-fleet'
+      config:
+        allowCrossWorkspace: false
+        maxListRows: 50
+        maxReadMessages: 50
+        maxMessageChars: 20000
