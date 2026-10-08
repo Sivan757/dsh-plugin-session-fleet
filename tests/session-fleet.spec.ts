@@ -61,6 +61,7 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
     maxListRows: config.maxListRows ?? 50,
     maxReadMessages: config.maxReadMessages ?? 50,
     maxMessageChars: config.maxMessageChars ?? 20_000,
+    includeSubagents: config.includeSubagents ?? false,
   }
   const ctx = new Context()
   contexts.add(ctx)
@@ -509,7 +510,7 @@ describe('session-fleet projection edge values', () => {
   })
 
   it('carries parent and origin fields in list rows when present', async () => {
-    const { ctx, lead } = await setup()
+    const { ctx, lead } = await setup({ includeSubagents: true })
     const stub = ctx.sessionController as unknown as { list: ReturnType<typeof vi.fn> }
     stub.list.mockResolvedValueOnce({
       items: [{
@@ -590,5 +591,69 @@ describe('session-fleet partial config defaults', () => {
   it('falls back message bound per key with a partial config', async () => {
     const { ctx, lead } = await setup({ allowCrossWorkspace: true, maxMessageChars: 5 })
     expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-foreign', message: 'x'.repeat(6) }), 'exceeds 5 characters')
+  })
+})
+
+
+describe('session-fleet ownership filtering', () => {
+  it('hides subagent rows from list_sessions and reports the hidden count', async () => {
+    const { ctx, lead } = await setup()
+    const stub = ctx.sessionController as unknown as { list: ReturnType<typeof vi.fn> }
+    stub.list.mockResolvedValueOnce({
+      items: [
+        { sessionId: 'fleet-top', updatedAt: 1, running: false, agentAvailable: false, blank: false, cwd: '/tmp' },
+        { sessionId: 'fleet-child', updatedAt: 2, running: false, agentAvailable: false, blank: false, cwd: '/tmp', origin: 'subagent' },
+      ],
+    })
+    const listed = JSON.parse(text(await execute(ctx, lead, 'list_sessions', {}))) as {
+      sessions: Array<{ sessionId: string }>
+      total: number
+      hiddenSubagentSessions?: number
+    }
+    expect(listed.sessions.map(row => row.sessionId)).toEqual(['fleet-top'])
+    expect(listed.total).toBe(1)
+    expect(listed.hiddenSubagentSessions).toBe(1)
+
+    // A later call keeps filtering and keeps reporting the hidden count.
+    stub.list.mockResolvedValueOnce({
+      items: [
+        { sessionId: 'fleet-top', updatedAt: 1, running: false, agentAvailable: false, blank: false, cwd: '/tmp' },
+        { sessionId: 'fleet-child', updatedAt: 2, running: false, agentAvailable: false, blank: false, cwd: '/tmp', origin: 'subagent' },
+      ],
+    })
+    const scoped = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { cwd: '/tmp' }))) as {
+      sessions: Array<{ sessionId: string }>
+      hiddenSubagentSessions?: number
+    }
+    expect(scoped.sessions.map(row => row.sessionId)).toEqual(['fleet-top'])
+    expect(scoped.hiddenSubagentSessions).toBe(1)
+  })
+
+  it('exposes subagent rows when includeSubagents is enabled', async () => {
+    const { ctx, lead } = await setup({ includeSubagents: true })
+    const stub = ctx.sessionController as unknown as { list: ReturnType<typeof vi.fn> }
+    stub.list.mockResolvedValueOnce({
+      items: [
+        { sessionId: 'fleet-top', updatedAt: 1, running: false, agentAvailable: false, blank: false, cwd: '/tmp' },
+        { sessionId: 'fleet-child', updatedAt: 2, running: false, agentAvailable: false, blank: false, cwd: '/tmp', origin: 'subagent' },
+      ],
+    })
+    const listed = JSON.parse(text(await execute(ctx, lead, 'list_sessions', {}))) as {
+      sessions: Array<{ sessionId: string }>
+      hiddenSubagentSessions?: number
+    }
+    expect(listed.sessions.map(row => row.sessionId).sort()).toEqual(['fleet-child', 'fleet-top'])
+    expect(listed.hiddenSubagentSessions).toBeUndefined()
+  })
+
+  it('refuses reading a subagent-owned session by default and allows it on opt-in', async () => {
+    const { ctx, lead } = await setup()
+    const stub = ctx.sessionController as unknown as { inspect: ReturnType<typeof vi.fn> }
+    stub.inspect.mockResolvedValueOnce({
+      meta: { version: 3, id: SessionId('fleet-child'), createdAt: 0, isSeeded: false, cwd: '/tmp', origin: 'subagent' },
+      inheritedEventCount: 0,
+      events: [],
+    })
+    expectToolError(await execute(ctx, lead, 'read_session', { session_id: 'fleet-child' }), 'subagent session owned by its parent')
   })
 })
