@@ -15,7 +15,7 @@ import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
 import SessionQueryEngine from '@deepseek-ai/dsh-session-query'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
-import { MockAdapter, textResponse } from '../../../testkit/mock-adapter.ts'
+import { MockAdapter, textResponse } from '../testkit/mock-adapter.ts'
 import * as fleet from '../src/index.ts'
 
 const SIGNAL = new AbortController().signal

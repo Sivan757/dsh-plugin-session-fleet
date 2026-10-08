@@ -1,33 +1,40 @@
 # dsh-plugin-session-fleet
 
-让 DeepSeek Harness 的一个智能体发现、读取、创建其他 DSH 会话并直接向它们发消息的模型工具插件。
+Session Fleet：一个 DeepSeek Harness 插件，通过五个面向模型的工具，让一个智能体发现、读取、创建其他 DSH 会话并直接向它们发消息。
 
 [English](README.md) | 中文
 
-## 包结构
+## 每个智能体安装的工具
 
-- packages/session-fleet：Cordis 函数插件。每个智能体五个作用域工具：list_sessions、search_sessions、read_session、create_session、send_to_session。
-- packages/session-fleet-bundle：可选 profile bundle，以保守默认值插入插件行。
+- list_sessions：列出可见会话及状态、活跃时间与工作目录，不激活任何目标。
+- search_sessions：跨可见会话消息的字面量全文搜索。
+- read_session：读取目标会话记录，最新消息在后。
+- create_session：在指定 cwd 或 workspace 创建会话。
+- send_to_session：通过 DSH 会话消息队列向其他会话投递排队或 steer 消息。
+
+投递消息携带专用的 session-fleet 来源标识与对等输入提示，目标会话不会把舰队输入误认为用户输入。
 
 ## 安装
 
 在 Web 侧边栏的插件页安装以下任一来源：
 
-- 本仓库：github:sivanzheng/dsh-session-fleet-plugin
 - 本地检出：本目录的绝对路径
+- 推送仓库后：github:USER/dsh-plugin-session-fleet
 
-然后启用 Session fleet。存活的根智能体随即获得五个工具。投递复用 DSH 的会话消息队列（排队回合走 followup，运行中回合走 steer），并携带专用的 session-fleet 消息来源，目标会话不会把舰队输入误认为用户输入。
+然后启用 Session fleet。
 
 ## 安全模型
 
-- 投递仅面向普通会话。subagent 子会话仍走 subagent 路由。
+- 投递仅面向普通会话；subagent 子会话仍走 subagent 路由。
 - 未设置 allowCrossWorkspace 为 true 时拒绝跨 workspace 投递。
-- 投递以“对等智能体输入”落地并带显式来源说明，绝不冒充用户输入。
+- 列表与读取上限（maxListRows、maxReadMessages、maxMessageChars）出厂为保守默认。
 
 ## 开发
 
     pnpm install
-    pnpm --filter dsh-plugin-session-fleet test
-    pnpm --filter dsh-plugin-session-fleet build
+    pnpm test
+    pnpm build
+    pnpm lint
+    pnpm typecheck
 
-需要 Node 22.19+ 或 24+。工具包基于已发布的 DeepSeek Harness 包构建；保持 peerDependencies 范围与目标安装一致。
+需要 Node 22.19+ 或 24+。peer 依赖固定 DeepSeek Harness 0.2.0-rc.2 系列包；保持与目标安装一致。开发期可用 pnpm overrides 把 peer 包指向 harness 检出目录。

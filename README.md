@@ -1,33 +1,40 @@
 # dsh-plugin-session-fleet
 
-Model-facing tools that let one DeepSeek Harness agent discover, read, create, and message other DSH sessions.
+Session Fleet: a DeepSeek Harness plugin whose five model-facing tools let one agent discover, read, create, and message other DSH sessions.
 
 English | [中文](README.zh.md)
 
-## Packages
+## Tools installed per agent
 
-- packages/session-fleet: the Cordis function plugin. Five scoped tools per agent: list_sessions, search_sessions, read_session, create_session, send_to_session.
-- packages/session-fleet-bundle: optional profile bundle that inserts the plugin row with conservative defaults.
+- list_sessions: list visible sessions with status, activity, and working directory, without starting any of them.
+- search_sessions: literal full-text search across visible session messages.
+- read_session: read one session transcript, newest messages last.
+- create_session: create a session in a given cwd or workspace.
+- send_to_session: deliver a queued or steered message to another session through the DSH session message queue.
+
+Deliveries carry the dedicated session-fleet message source and a peer-agent framing note, so targets never mistake fleet input for user input.
 
 ## Install
 
 From the Web sidebar's Plugins page, install one of:
 
-- the repository: github:sivanzheng/dsh-session-fleet-plugin
 - a local checkout: an absolute path to this directory
+- the repository once pushed: github:USER/dsh-plugin-session-fleet
 
-Then enable Session fleet. A live root agent receives the five tools. Deliveries reuse the DSH session message queue (followup for queued turns, steer for the running turn) and carry the dedicated session-fleet message source, so targets never mistake fleet input for user input.
+Then enable Session fleet.
 
 ## Safety model
 
 - Delivery targets ordinary sessions only. Subagent children stay on subagent routing.
 - Cross-workspace delivery is refused unless allowCrossWorkspace is true on the plugin row.
-- A delivery lands as peer-agent input with an explicit source note, never as user input.
+- List and search bounds (maxListRows, maxReadMessages, maxMessageChars) ship conservative defaults.
 
 ## Development
 
     pnpm install
-    pnpm --filter dsh-plugin-session-fleet test
-    pnpm --filter dsh-plugin-session-fleet build
+    pnpm test
+    pnpm build
+    pnpm lint
+    pnpm typecheck
 
-Requires Node 22.19+ or 24+. The tools package builds against published DeepSeek Harness packages; keep the peerDependencies ranges aligned with the installation you target.
+Requires Node 22.19+ or 24+. Peer dependencies pin DeepSeek Harness 0.2.0-rc.2 packages; keep them aligned with the installation you target. During development you can point peer packages at a harness checkout with pnpm overrides.
