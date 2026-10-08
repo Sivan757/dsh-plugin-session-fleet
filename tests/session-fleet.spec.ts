@@ -61,6 +61,7 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
     maxListRows: config.maxListRows ?? 50,
     maxReadMessages: config.maxReadMessages ?? 50,
     maxMessageChars: config.maxMessageChars ?? 20_000,
+    maxMessageTextChars: config.maxMessageTextChars ?? 400,
     includeSubagents: config.includeSubagents ?? false,
   }
   const ctx = new Context()
@@ -655,5 +656,60 @@ describe('session-fleet ownership filtering', () => {
       events: [],
     })
     expectToolError(await execute(ctx, lead, 'read_session', { session_id: 'fleet-child' }), 'subagent session owned by its parent')
+  })
+})
+
+
+describe('session-fleet read token economy', () => {
+  it('truncates long message text to the configured bound and reports fullLength', async () => {
+    const { ctx, lead } = await setup({ maxMessageTextChars: 20 })
+    const stub = ctx.sessionController as unknown as { inspect: ReturnType<typeof vi.fn> }
+    stub.inspect.mockResolvedValueOnce({
+      meta: { version: 3, id: SessionId('fleet-long'), createdAt: 0, isSeeded: false, cwd: '/tmp' },
+      inheritedEventCount: 0,
+      events: [{
+        type: 'user/message', seq: 7, time: 1,
+        data: { role: 'user', content: [{ type: 'text', text: 'x'.repeat(200) }], source: { kind: 'user' } },
+      }],
+    })
+    const read = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-long' }))) as {
+      messages: Array<{ text: string; truncated: boolean; fullLength?: number }>
+    }
+    expect(read.messages[0]).toMatchObject({ text: 'x'.repeat(20), truncated: true, fullLength: 200 })
+  })
+
+  it('emits nextSeq and returns only newer messages with after_seq', async () => {
+    const { ctx, lead, other } = await setup()
+    other.followup(createUserMessage({ content: [{ type: 'text', text: 'cursor seed line' }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const first = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-other', max_messages: 50 }))) as {
+      messages: Array<{ seq: number }>
+      nextSeq?: number
+    }
+    expect(first.messages.length).toBeGreaterThan(0)
+    expect(first.nextSeq).toBe(first.messages.at(-1)!.seq)
+
+    const incremental = JSON.parse(text(await execute(ctx, lead, 'read_session', {
+      session_id: 'fleet-other', max_messages: 50, after_seq: first.nextSeq,
+    }))) as { messages: unknown[]; nextSeq?: number }
+    expect(incremental.messages).toEqual([])
+    expect(incremental.nextSeq).toBeUndefined()
+  })
+
+  it('keeps short messages unclipped with no truncation metadata', async () => {
+    const { ctx, lead } = await setup({ maxMessageTextChars: 400 })
+    const stub = ctx.sessionController as unknown as { inspect: ReturnType<typeof vi.fn> }
+    stub.inspect.mockResolvedValueOnce({
+      meta: { version: 3, id: SessionId('fleet-short'), createdAt: 0, isSeeded: false, cwd: '/tmp' },
+      inheritedEventCount: 0,
+      events: [{
+        type: 'assistant/message', seq: 2, time: 1,
+        data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'short' }], source: { kind: 'model' } } },
+      }],
+    })
+    const read = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-short' }))) as {
+      messages: Array<{ text: string; truncated: boolean; fullLength?: number }>
+    }
+    expect(read.messages[0]).toEqual({ seq: 2, role: 'assistant', source: 'model', text: 'short', truncated: false })
   })
 })

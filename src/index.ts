@@ -36,6 +36,8 @@ export interface Config {
   readonly maxReadMessages?: number
   /** Upper bound of one send_to_session message body in UTF-16 code units. */
   readonly maxMessageChars?: number
+  /** Per-message text bound in one read_session row; longer text is truncated with its full size. */
+  readonly maxMessageTextChars?: number
   /** Expose subagent-owned sessions to list, search, and read. Delivery stays refused. */
   readonly includeSubagents?: boolean
 }
@@ -46,6 +48,7 @@ export const Config: z<Config> = z.object({
   maxListRows: z.number().default(50),
   maxReadMessages: z.number().default(50),
   maxMessageChars: z.number().default(20_000),
+  maxMessageTextChars: z.number().default(400),
   includeSubagents: z.boolean().default(false),
 })
 
@@ -107,6 +110,8 @@ const READ_MESSAGE_SCHEMA = {
     role: { type: 'string', required: true, enum: ['user', 'assistant'] },
     source: { type: 'string', required: true },
     text: { type: 'string', required: true },
+    truncated: { type: 'boolean', required: true },
+    fullLength: { type: 'integer' },
   },
 } as const
 
@@ -118,6 +123,7 @@ const READ_VALUE_SCHEMA = {
     cwd: { type: 'string' },
     messages: { type: 'array', required: true, items: READ_MESSAGE_SCHEMA },
     truncated: { type: 'boolean', required: true },
+    nextSeq: { type: 'integer' },
   },
 } as const
 
@@ -184,19 +190,32 @@ function fleetRow(summary: SessionSummary): InferValue<typeof SESSION_ROW_SCHEMA
 }
 
 /** Model-facing transcript rows folded from one session event list, tail-truncated to `limit`. */
-function transcriptRows(events: readonly SessionEvent[], limit: number): {
+function transcriptRows(events: readonly SessionEvent[], limit: number, config: Required<Config>, afterSeq?: number): {
   rows: InferValue<typeof READ_MESSAGE_SCHEMA>[]
   truncated: boolean
+  nextSeq: number | undefined
 } {
   const rows: InferValue<typeof READ_MESSAGE_SCHEMA>[] = []
+  let newestSeq: number | undefined
   for (const event of events) {
-    if (event.type === 'user/message') {
-      rows.push({ seq: event.seq, role: 'user', source: event.data.source.kind, text: contentText(event.data.content) })
-    } else if (event.type === 'assistant/message') {
-      rows.push({ seq: event.seq, role: 'assistant', source: 'model', text: contentText(event.data.message.content) })
-    }
+    if (event.type !== 'user/message' && event.type !== 'assistant/message') continue
+    if (afterSeq !== undefined && event.seq <= afterSeq) continue
+    newestSeq = event.seq
+    const full = event.type === 'user/message'
+      ? contentText(event.data.content)
+      : contentText(event.data.message.content)
+    const bound = config.maxMessageTextChars
+    const clipped = full.length > bound
+    rows.push({
+      seq: event.seq,
+      role: event.type === 'user/message' ? 'user' : 'assistant',
+      source: event.type === 'user/message' ? event.data.source.kind : 'model',
+      text: clipped ? full.slice(0, bound) : full,
+      truncated: clipped,
+      ...clipped ? { fullLength: full.length } : {},
+    })
   }
-  return { rows: rows.slice(-limit), truncated: rows.length > limit }
+  return { rows: rows.slice(-limit), truncated: rows.length > limit, nextSeq: newestSeq }
 }
 
 /** Whether one value is a positive safe integer within `max`. */
@@ -273,6 +292,10 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
           type: 'integer',
           description: `Maximum transcript messages returned, keeping the newest, 1 through ${config.maxReadMessages}. Defaults to 20.`,
         },
+        after_seq: {
+          type: 'integer',
+          description: 'Return only messages with a larger seq (incremental reads); pair with nextSeq from the previous response.',
+        },
       },
       output: jsonOutput(READ_VALUE_SCHEMA),
       async execute(args, exec) {
@@ -287,7 +310,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
         } catch (error: unknown) {
           throw new Error(errorText(error))
         }
-        const { rows, truncated } = transcriptRows(inspection.events, limit)
+        const { rows, truncated, nextSeq } = transcriptRows(inspection.events, limit, config, args.after_seq)
         if (inspection.meta.origin === 'subagent' && !config.includeSubagents) {
           throw new Error(`session "${inspection.meta.id}" is a subagent session owned by its parent; fleet reads cover ordinary sessions only`)
         }
@@ -296,6 +319,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
           ...inspection.meta.cwd === undefined ? {} : { cwd: inspection.meta.cwd },
           messages: rows,
           truncated,
+          ...nextSeq === undefined ? {} : { nextSeq },
         }
       },
     })))
