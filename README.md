@@ -28,6 +28,7 @@ Then enable Session fleet.
 - Delivery targets ordinary sessions only. Subagent children stay on subagent routing.
 - Cross-workspace delivery is refused unless allowCrossWorkspace is true on the plugin row.
 - List and search bounds (maxListRows, maxReadMessages, maxMessageChars) ship conservative defaults.
+- read_session truncates each message to maxMessageTextChars (default 400) and marks longer rows with truncated plus fullLength, so one read cannot pull a whole injected instruction file. Pair the returned nextSeq cursor with after_seq for incremental polling: a poll that finds nothing new costs a few hundred bytes instead of a second full transcript.
 
 ## Development
 
