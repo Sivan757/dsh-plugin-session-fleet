@@ -59,9 +59,7 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
   const full = {
     allowCrossWorkspace: config.allowCrossWorkspace ?? false,
     maxListRows: config.maxListRows ?? 50,
-    maxReadMessages: config.maxReadMessages ?? 50,
     maxMessageChars: config.maxMessageChars ?? 20_000,
-    maxMessageTextChars: config.maxMessageTextChars ?? 400,
     includeSubagents: config.includeSubagents ?? false,
   }
   const ctx = new Context()
@@ -138,7 +136,6 @@ function expectToolError(result: Awaited<ReturnType<typeof execute>>, fragment: 
 const FLEET_TOOLS = [
   'list_sessions',
   'search_sessions',
-  'read_session',
   'create_session',
   'send_to_session',
 ].sort()
@@ -163,37 +160,6 @@ describe('session-fleet tools', () => {
     expectToolError(await execute(ctx, lead, 'list_sessions', { limit: 0 }), 'limit must be an integer from 1 through 50')
     expectToolError(await execute(ctx, lead, 'list_sessions', { limit: 51 }), 'limit must be an integer from 1 through 50')
     expect(other.status).toBe('idle')
-  })
-
-  it('reads another session transcript with truncation and controller failures', async () => {
-    const { ctx, lead, other } = await setup()
-    other.followup(createUserMessage({ content: [{ type: 'text', text: 'first fixture line' }], source: { kind: 'user' } }))
-    await other.whenIdle()
-    other.followup(createUserMessage({ content: [{ type: 'text', text: 'second fixture line' }], source: { kind: 'user' } }))
-    await other.whenIdle()
-
-    const read = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-other' }))) as {
-      messages: Array<{ role: string; source: string; text: string }>
-      truncated: boolean
-    }
-    expect(read.messages.filter(row => row.role === 'user').map(row => row.text))
-      .toEqual(['first fixture line', 'second fixture line'])
-    expect(read.messages.every(row => row.role === 'user' ? row.source === 'user' : true)).toBe(true)
-    expect(read.truncated).toBe(false)
-
-    const clipped = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-other', max_messages: 1 }))) as {
-      messages: Array<{ text: string }>
-      truncated: boolean
-    }
-    expect(clipped.messages).toHaveLength(1)
-    expect(clipped.messages[0]!.text).toBe('second fixture line')
-    expect(clipped.truncated).toBe(true)
-
-    expectToolError(await execute(ctx, lead, 'read_session', { session_id: 'fleet-missing' }), 'session/not-found')
-    expectToolError(
-      await execute(ctx, lead, 'read_session', { session_id: 'fleet-other', max_messages: 0 }),
-      'max_messages must be an integer from 1 through 50',
-    )
   })
 
   it('searches sessions through the controller and surfaces hasMore', async () => {
@@ -296,7 +262,6 @@ describe('session-fleet tools', () => {
   })
 })
 
-
 describe('session-fleet failure paths and optionality', () => {
   it('maps controller rejections from list and search into tool errors', async () => {
     const { ctx, lead } = await setup()
@@ -310,21 +275,6 @@ describe('session-fleet failure paths and optionality', () => {
     const { ctx, lead } = await setup()
     vi.spyOn(ctx.sessionController, 'list').mockRejectedValue(new Error('plain failure'))
     expectToolError(await execute(ctx, lead, 'list_sessions', {}), 'plain failure')
-  })
-
-  it('projects assistant rows and non-text blocks with placeholders', async () => {
-    const { ctx, lead, other } = await setup()
-    other.followup(createUserMessage({ content: [{ type: 'text', text: 'question' }], source: { kind: 'user' } }))
-    await other.whenIdle()
-    // The scripted mock adapter answered with a tool call-free text response? The default script is empty,
-    // so drive one assistant answer through an explicit followup and empty adapter entry.
-    other.followup(createUserMessage({ content: [{ type: 'text', text: 'again' }], source: { kind: 'user' } }))
-    await other.whenIdle()
-    const read = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-other' }))) as {
-      messages: Array<{ role: string; source: string; text: string }>
-    }
-    expect(read.messages.every(row => typeof row.text === 'string')).toBe(true)
-    expect(read.messages.some(row => row.source === 'user')).toBe(true)
   })
 
   it('creates through a workspace id and carries the resolved preset', async () => {
@@ -369,13 +319,6 @@ describe('session-fleet failure paths and optionality', () => {
       event.type === 'user/message' && event.data.source.kind === 'session-fleet')).toBe(true)
   })
 
-  it('defaults omitted config to the documented bounds', async () => {
-    const { ctx, lead } = await setup({})
-    expectToolError(await execute(ctx, lead, 'list_sessions', { limit: 51 }), 'limit must be an integer from 1 through 50')
-    expectToolError(await execute(ctx, lead, 'read_session', { session_id: 'fleet-other', max_messages: 51 }), 'max_messages must be an integer from 1 through 50')
-    expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-other', message: 'x'.repeat(20_001) }), 'exceeds 20000 characters')
-  })
-
   it('rolls back partial installs when a scope registration throws', async () => {
     const ctx = new Context()
     contexts.add(ctx)
@@ -409,34 +352,7 @@ describe('session-fleet failure paths and optionality', () => {
   })
 })
 
-
 describe('session-fleet coverage completion', () => {
-  it('projects assistant messages with model source in transcripts', async () => {
-    const { ctx, lead, other } = await setup({}, [textResponse('assistant answer')])
-    other.followup(createUserMessage({ content: [{ type: 'text', text: 'question' }], source: { kind: 'user' } }))
-    await other.whenIdle()
-    const read = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-other' }))) as {
-      messages: Array<{ role: string; source: string; text: string }>
-    }
-    const assistant = read.messages.find(row => row.role === 'assistant')
-    expect(assistant).toMatchObject({ role: 'assistant', source: 'model', text: 'assistant answer' })
-  })
-
-  it('reads a cwd-less session and omits the cwd field', async () => {
-    const { ctx, lead } = await setup()
-    const stub = ctx.sessionController as unknown as { inspect: ReturnType<typeof vi.fn> }
-    stub.inspect.mockResolvedValueOnce({
-      meta: { version: 3, id: SessionId('fleet-cwdless'), createdAt: 0, isSeeded: false },
-      inheritedEventCount: 0,
-      events: [],
-    })
-    const read = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-cwdless' }))) as {
-      cwd?: string
-      messages: unknown[]
-    }
-    expect(read.cwd).toBeUndefined()
-    expect(read.messages).toEqual([])
-  })
 
   it('omits absent parent and origin fields in list rows', async () => {
     const { ctx, lead } = await setup()
@@ -483,32 +399,9 @@ describe('session-fleet coverage completion', () => {
     expect(ctx.tools.get('list_sessions', scope)).toBeUndefined()
   })
 
-  it('applies explicit config bounds over the defaults', async () => {
-    const { ctx, lead } = await setup({ maxListRows: 2, maxReadMessages: 3, maxMessageChars: 10 })
-    expectToolError(await execute(ctx, lead, 'list_sessions', { limit: 3 }), 'limit must be an integer from 1 through 2')
-    expectToolError(await execute(ctx, lead, 'read_session', { session_id: 'fleet-other', max_messages: 4 }), 'max_messages must be an integer from 1 through 3')
-    expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-other', message: 'x'.repeat(11) }), 'exceeds 10 characters')
-  })
 })
 
-
 describe('session-fleet projection edge values', () => {
-  it('renders non-text content blocks as placeholders in transcripts', async () => {
-    const { ctx, lead } = await setup()
-    const stub = ctx.sessionController as unknown as { inspect: ReturnType<typeof vi.fn> }
-    stub.inspect.mockResolvedValueOnce({
-      meta: { version: 3, id: SessionId('fleet-blocks'), createdAt: 0, isSeeded: false, cwd: '/tmp' },
-      inheritedEventCount: 0,
-      events: [{
-        type: 'user/message', seq: 1, time: 1,
-        data: { role: 'user', content: [{ type: 'image', mediaType: 'image/png', data: 'x' }], source: { kind: 'user' } },
-      }],
-    })
-    const read = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-blocks' }))) as {
-      messages: Array<{ text: string }>
-    }
-    expect(read.messages[0]!.text).toBe('[image]')
-  })
 
   it('carries parent and origin fields in list rows when present', async () => {
     const { ctx, lead } = await setup({ includeSubagents: true })
@@ -534,14 +427,7 @@ describe('session-fleet projection edge values', () => {
   })
 })
 
-
 describe('session-fleet apply defaults and re-entry', () => {
-  it('resolves documented default bounds when loaded without config', async () => {
-    const { ctx, lead } = await setup()
-    expectToolError(await execute(ctx, lead, 'list_sessions', { limit: 51 }), 'from 1 through 50')
-    expectToolError(await execute(ctx, lead, 'read_session', { session_id: 'fleet-other', max_messages: 51 }), 'from 1 through 50')
-    expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-other', message: 'x'.repeat(20_001) }), 'exceeds 20000 characters')
-  })
 
   it('skips a second install when an agent re-enters the created path', async () => {
     const { ctx, lead } = await setup()
@@ -553,48 +439,13 @@ describe('session-fleet apply defaults and re-entry', () => {
   })
 })
 
-
-describe('session-fleet bare apply defaults', () => {
-  it('resolves all defaults when apply receives no config', async () => {
-    const ctx = new Context()
-    contexts.add(ctx)
-    await mountAgentLoopTestDependencies(ctx)
-    await ctx.plugin(AgentLoop, { agents: [] })
-    ctx.llm.registerAdapter(['mock'], new MockAdapter([]))
-    const stub = {
-      resolveAgent: vi.fn(async (sessionId: SessionId) => sessionId === SessionId('foreign')
-        ? { agent: { id: sessionId, session: { header: { id: sessionId, cwd: '/elsewhere' } } } }
-        : { error: new RemoteError('session/not-found', 'no', { sessionId: SessionId('x') }) }),
-      list: vi.fn(async () => ({ items: [] })),
-      search: vi.fn(async () => ({ items: [], hasMore: false })),
-      inspect: vi.fn(async () => { throw new Error('unused') }),
-      create: vi.fn(async () => ({ sessionId: 'x' })),
-    }
-    ctx.provide('sessionController', stub as never)
-    await ctx.plugin(fleet)
-    const agent = await ctx.agentLoop.create(SessionId('fleet-default'), { provider: 'mock', model: 'mock' })
-    expectToolError(await execute(ctx, agent, 'list_sessions', { limit: 51 }), 'from 1 through 50')
-    expectToolError(await execute(ctx, agent, 'read_session', { session_id: 'fleet-default', max_messages: 51 }), 'from 1 through 50')
-    expectToolError(await execute(ctx, agent, 'send_to_session', { session_id: 'foreign', message: 'x'.repeat(20_001) }), 'exceeds 20000 characters')
-    expectToolError(await execute(ctx, agent, 'send_to_session', { session_id: 'foreign', message: 'hi' }), 'cross-workspace delivery is disabled')
-  })
-})
-
-
 describe('session-fleet partial config defaults', () => {
-  it('falls back per key when config sets only some keys', async () => {
-    const { ctx, lead } = await setup({ maxListRows: 3 })
-    expectToolError(await execute(ctx, lead, 'list_sessions', { limit: 4 }), 'from 1 through 3')
-    expectToolError(await execute(ctx, lead, 'read_session', { session_id: 'fleet-other', max_messages: 51 }), 'from 1 through 50')
-    expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-foreign', message: 'hi' }), 'cross-workspace delivery is disabled')
-  })
 
   it('falls back message bound per key with a partial config', async () => {
     const { ctx, lead } = await setup({ allowCrossWorkspace: true, maxMessageChars: 5 })
     expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-foreign', message: 'x'.repeat(6) }), 'exceeds 5 characters')
   })
 })
-
 
 describe('session-fleet ownership filtering', () => {
   it('hides subagent rows from list_sessions and reports the hidden count', async () => {
@@ -647,69 +498,5 @@ describe('session-fleet ownership filtering', () => {
     expect(listed.hiddenSubagentSessions).toBeUndefined()
   })
 
-  it('refuses reading a subagent-owned session by default and allows it on opt-in', async () => {
-    const { ctx, lead } = await setup()
-    const stub = ctx.sessionController as unknown as { inspect: ReturnType<typeof vi.fn> }
-    stub.inspect.mockResolvedValueOnce({
-      meta: { version: 3, id: SessionId('fleet-child'), createdAt: 0, isSeeded: false, cwd: '/tmp', origin: 'subagent' },
-      inheritedEventCount: 0,
-      events: [],
-    })
-    expectToolError(await execute(ctx, lead, 'read_session', { session_id: 'fleet-child' }), 'subagent session owned by its parent')
-  })
 })
 
-
-describe('session-fleet read token economy', () => {
-  it('truncates long message text to the configured bound and reports fullLength', async () => {
-    const { ctx, lead } = await setup({ maxMessageTextChars: 20 })
-    const stub = ctx.sessionController as unknown as { inspect: ReturnType<typeof vi.fn> }
-    stub.inspect.mockResolvedValueOnce({
-      meta: { version: 3, id: SessionId('fleet-long'), createdAt: 0, isSeeded: false, cwd: '/tmp' },
-      inheritedEventCount: 0,
-      events: [{
-        type: 'user/message', seq: 7, time: 1,
-        data: { role: 'user', content: [{ type: 'text', text: 'x'.repeat(200) }], source: { kind: 'user' } },
-      }],
-    })
-    const read = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-long' }))) as {
-      messages: Array<{ text: string; truncated: boolean; fullLength?: number }>
-    }
-    expect(read.messages[0]).toMatchObject({ text: 'x'.repeat(20), truncated: true, fullLength: 200 })
-  })
-
-  it('emits nextSeq and returns only newer messages with after_seq', async () => {
-    const { ctx, lead, other } = await setup()
-    other.followup(createUserMessage({ content: [{ type: 'text', text: 'cursor seed line' }], source: { kind: 'user' } }))
-    await other.whenIdle()
-    const first = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-other', max_messages: 50 }))) as {
-      messages: Array<{ seq: number }>
-      nextSeq?: number
-    }
-    expect(first.messages.length).toBeGreaterThan(0)
-    expect(first.nextSeq).toBe(first.messages.at(-1)!.seq)
-
-    const incremental = JSON.parse(text(await execute(ctx, lead, 'read_session', {
-      session_id: 'fleet-other', max_messages: 50, after_seq: first.nextSeq,
-    }))) as { messages: unknown[]; nextSeq?: number }
-    expect(incremental.messages).toEqual([])
-    expect(incremental.nextSeq).toBeUndefined()
-  })
-
-  it('keeps short messages unclipped with no truncation metadata', async () => {
-    const { ctx, lead } = await setup({ maxMessageTextChars: 400 })
-    const stub = ctx.sessionController as unknown as { inspect: ReturnType<typeof vi.fn> }
-    stub.inspect.mockResolvedValueOnce({
-      meta: { version: 3, id: SessionId('fleet-short'), createdAt: 0, isSeeded: false, cwd: '/tmp' },
-      inheritedEventCount: 0,
-      events: [{
-        type: 'assistant/message', seq: 2, time: 1,
-        data: { turn: 1, step: 1, message: { role: 'assistant', content: [{ type: 'text', text: 'short' }], source: { kind: 'model' } } },
-      }],
-    })
-    const read = JSON.parse(text(await execute(ctx, lead, 'read_session', { session_id: 'fleet-short' }))) as {
-      messages: Array<{ text: string; truncated: boolean; fullLength?: number }>
-    }
-    expect(read.messages[0]).toEqual({ seq: 2, role: 'assistant', source: 'model', text: 'short', truncated: false })
-  })
-})
