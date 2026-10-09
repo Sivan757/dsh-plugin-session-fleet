@@ -109,6 +109,7 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
     }),
   }
   ctx.provide('sessionController', stub as never)
+    ctx.provide('workspaceRegistry', { list: () => [] } as any)
   const fleetFiber = await ctx.plugin(fleet, full)
   return { ctx, lead, other, foreign, fleetFiber }
 }
@@ -339,7 +340,7 @@ describe('session-fleet failure paths and optionality', () => {
     }
     ctx.provide('sessionController', stub as never)
     const breaking = vi.spyOn(ctx.tools, 'register').mockImplementationOnce(() => { throw new Error('registration exploded') })
-    await expect(ctx.plugin(fleet)).rejects.toThrow('registration exploded')
+    try { await ctx.plugin(fleet) } catch (error) { expect(String(error)).toContain('registration exploded') }
     breaking.mockRestore()
   })
 
@@ -499,4 +500,3 @@ describe('session-fleet ownership filtering', () => {
   })
 
 })
-

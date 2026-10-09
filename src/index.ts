@@ -10,13 +10,14 @@ import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { InferValue, ValueSchemaSpec } from '@deepseek-ai/dsh-tools'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
+import type {} from '@deepseek-ai/dsh-workspace'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type { SessionSummary } from '@deepseek-ai/dsh-api-session-controller/types'
 
 /** Cordis plugin name. */
 export const name = 'tool-session-fleet'
 /** Services required by the Session Fleet tool plugin. */
-export const inject = ['agents', 'sessions', 'sessionController', 'tools', 'systemPrompt']
+export const inject = ['agents', 'sessions', 'sessionController', 'workspaceRegistry', 'tools', 'systemPrompt']
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -219,7 +220,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
 
     register(scoped.tools.register(defineTool({
       name: 'create_session',
-      description: 'Create one new DSH session and return its id. Omitting cwd and workspace_id creates it in this session\'s working directory.',
+      description: 'Create one new DSH session and return its id. If workspace_id is omitted, the session is automatically added to this session\'s workspace.',
       parameters: {
         cwd: { type: 'string', description: 'Absolute working directory for the new session.' },
         workspace_id: { type: 'string', description: 'Existing workspace to attach the new session to.' },
@@ -230,15 +231,24 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
         if (args.cwd !== undefined && args.workspace_id !== undefined) {
           throw new Error('create_session accepts cwd or workspace_id, not both')
         }
-        const cwd = args.cwd ?? (args.workspace_id === undefined ? caller.session.header.cwd : undefined)
-        if (args.workspace_id === undefined && cwd === undefined) {
+        let workspaceId = args.workspace_id
+        // Auto-resolve workspace from caller's session if not specified
+        if (workspaceId === undefined) {
+          const workspaces = ctx.workspaceRegistry.list()
+          const callerWs = workspaces.find((w) => w.sessionIds.includes(caller.id))
+          if (callerWs !== undefined) {
+            workspaceId = callerWs.id
+          }
+        }
+        const cwd = args.cwd ?? (workspaceId === undefined ? caller.session.header.cwd : undefined)
+        if (workspaceId === undefined && cwd === undefined) {
           throw new Error('create_session could not resolve a working directory; pass cwd')
         }
         let created
         try {
           created = await ctx.sessionController.create({
             ...(cwd === undefined ? {} : { cwd }),
-            ...(args.workspace_id === undefined ? {} : { workspaceId: brandString<WorkspaceId>(args.workspace_id) }),
+            ...(workspaceId === undefined ? {} : { workspaceId: brandString<WorkspaceId>(workspaceId) }),
           })
         } catch (error: unknown) {
           throw new Error(errorText(error))
