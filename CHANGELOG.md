@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.2](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.2.1...dsh-plugin-session-fleet-v0.2.2) (2026-10-17)
+
+
+### Bug Fixes
+
+* assert the build order without needing a build ([f6cb892](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/f6cb8929b567dff58e03d4a147e70b25e738c617))
+
+
+### Miscellaneous Chores
+
+* **release:** pin this release to 0.2.2 ([a90a439](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/a90a439bb9c0a56f338ad696fa1c3a21ffb5c77b))
+
 ## [0.2.1](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.2.0...dsh-plugin-session-fleet-v0.2.1) (2026-10-17)
 
 
