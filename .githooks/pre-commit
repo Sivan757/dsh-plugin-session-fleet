@@ -1,0 +1,8 @@
+#!/bin/sh
+# Local gate: a stale host pin must fail before it becomes a tag with an artifact behind it.
+set -e
+cd "$(git rev-parse --show-toplevel)"
+node scripts/check-host-support.mjs
+./node_modules/.bin/tsc -p tsconfig.json --noEmit
+./node_modules/.bin/oxlint src tests
+./node_modules/.bin/prettier --check .

@@ -1,4 +1,5 @@
 node_modules/
-lib/
+# Build output. Anchored: a bare `lib/` would also match a nested directory of that name.
+/lib/
 coverage/
 *.tsbuildinfo

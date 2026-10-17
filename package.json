@@ -59,10 +59,12 @@
     "format:check": "prettier --check .",
     "check:refactor": "pnpm run check:host-support && pnpm run typecheck && pnpm run lint && pnpm run format:check",
     "pretest": "pnpm run check:refactor",
-    "prepack": "pnpm run check:refactor && pnpm run test && pnpm run build"
+    "prepack": "pnpm run check:refactor && pnpm run test && pnpm run build",
+    "prepare": "node scripts/setup-git-hooks.mjs"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
   },
   "dsh": {
     "bundle": {
