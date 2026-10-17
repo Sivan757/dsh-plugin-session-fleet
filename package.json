@@ -49,8 +49,8 @@
     "agent-teams"
   ],
   "scripts": {
-    "build:types": "tsc -p tsconfig.json",
-    "build": "pnpm run build:types && tsdown -c tsdown.config.ts",
+    "build:types": "tsc -p tsconfig.json --emitDeclarationOnly",
+    "build": "tsdown -c tsdown.config.ts && pnpm run build:types",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "oxlint src tests",

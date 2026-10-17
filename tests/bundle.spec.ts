@@ -1,6 +1,6 @@
 /** The installed package must declare one parseable Session Fleet bundle layer. */
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -24,5 +24,17 @@ describe('Session Fleet bundle declaration', () => {
       name: 'dsh-plugin-session-fleet',
       config: { allowCrossWorkspace: false, maxListRows: 50, maxMessageChars: 20000, includeSubagents: false }
     })
+  })
+
+  it('ships every file its manifest promises', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
+      main?: string
+      types?: string
+      files?: string[]
+    }
+    // The bundler cleans lib before writing, so a build that emits declarations first loses them.
+    expect(existsSync(resolve(root, manifest.main!)), manifest.main).toBe(true)
+    expect(existsSync(resolve(root, manifest.types!)), manifest.types).toBe(true)
   })
 })
