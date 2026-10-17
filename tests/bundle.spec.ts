@@ -1,6 +1,6 @@
 /** The installed package must declare one parseable Session Fleet bundle layer. */
 
-import { existsSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -26,15 +26,18 @@ describe('Session Fleet bundle declaration', () => {
     })
   })
 
-  it('ships every file its manifest promises', () => {
+  it('declares a build that bundles before it emits declarations', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const manifest = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8')) as {
       main?: string
       types?: string
-      files?: string[]
+      scripts?: Record<string, string>
     }
-    // The bundler cleans lib before writing, so a build that emits declarations first loses them.
-    expect(existsSync(resolve(root, manifest.main!)), manifest.main).toBe(true)
-    expect(existsSync(resolve(root, manifest.types!)), manifest.types).toBe(true)
+    // The bundler cleans lib before it writes, so emitting declarations first loses them.
+    const build = manifest.scripts?.build ?? ''
+    expect(build.indexOf('tsdown')).toBeGreaterThanOrEqual(0)
+    expect(build.indexOf('tsdown')).toBeLessThan(build.indexOf('build:types'))
+    expect(manifest.main).toBe('lib/index.js')
+    expect(manifest.types).toBe('lib/types/index.d.ts')
   })
 })
