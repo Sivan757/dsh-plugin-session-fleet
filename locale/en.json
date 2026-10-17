@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Session fleet",
-    "description": "Let agents discover, read, create, and message your other DSH sessions."
+    "description": "Four model-facing tools that let one agent list and search other DSH sessions, create a session, and message a session directly."
   }
 }

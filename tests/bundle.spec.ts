@@ -22,7 +22,7 @@ describe('Session Fleet bundle declaration', () => {
     const inserted = (Array.isArray(parsed) ? parsed : []).flatMap(patch => patch.insert ?? [])
     expect(inserted.find(entry => entry.id === 'tool-session-fleet')).toMatchObject({
       name: 'dsh-plugin-session-fleet',
-      config: { allowCrossWorkspace: false, maxListRows: 50, maxReadMessages: 50, maxMessageChars: 20000 },
+      config: { allowCrossWorkspace: false, maxListRows: 50, maxMessageChars: 20000, includeSubagents: false }
     })
   })
 })

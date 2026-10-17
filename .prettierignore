@@ -1,0 +1,5 @@
+node_modules/
+/lib/
+pnpm-lock.yaml
+*.tgz
+CHANGELOG.md

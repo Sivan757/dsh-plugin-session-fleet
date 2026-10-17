@@ -8,7 +8,7 @@ export function textResponse(text: string): StreamChunk[] {
     ...Array.from(text, (char): StreamChunk => ({ type: 'text-delta', index: 0, text: char })),
     { type: 'block-end', index: 0, block: { type: 'text', text } },
     { type: 'usage', usage: { inputTokens: 10, outputTokens: text.length } },
-    { type: 'finish', reason: { kind: 'stop' } },
+    { type: 'finish', reason: { kind: 'stop' } }
   ]
 }
 
@@ -23,7 +23,7 @@ export function maxTokensResponse(text: string): StreamChunk[] {
     ...Array.from(text, (char): StreamChunk => ({ type: 'text-delta', index: 0, text: char })),
     { type: 'block-end', index: 0, block: { type: 'text', text } },
     { type: 'usage', usage: { inputTokens: 10, outputTokens: text.length } },
-    { type: 'finish', reason: { kind: 'max-tokens' } },
+    { type: 'finish', reason: { kind: 'max-tokens' } }
   ]
 }
 
@@ -33,11 +33,7 @@ export function toolCallResponse(rawCallId: string, name: string, args: object, 
   const chunks: StreamChunk[] = []
   let index = 0
   if (text) {
-    chunks.push(
-      { type: 'block-start', index, blockType: 'text' },
-      { type: 'text-delta', index, text },
-      { type: 'block-end', index, block: { type: 'text', text } },
-    )
+    chunks.push({ type: 'block-start', index, blockType: 'text' }, { type: 'text-delta', index, text }, { type: 'block-end', index, block: { type: 'text', text } })
     index += 1
   }
   chunks.push(
@@ -47,10 +43,10 @@ export function toolCallResponse(rawCallId: string, name: string, args: object, 
     {
       type: 'block-end',
       index,
-      block: { type: 'tool-call', id: callId, name, arguments: argumentsJson },
+      block: { type: 'tool-call', id: callId, name, arguments: argumentsJson }
     },
     { type: 'usage', usage: { inputTokens: 10, outputTokens: 5 } },
-    { type: 'finish', reason: { kind: 'tool-calls' } },
+    { type: 'finish', reason: { kind: 'tool-calls' } }
   )
   return chunks
 }
@@ -79,27 +75,24 @@ export class MockAdapter extends LlmAdapter {
   constructor(
     private script: (StreamChunk[] | ((options: GenerateOptions) => StreamChunk[]) | 'hang' | 'hang-slow' | HangAfter)[],
     private readonly reasoning?: LlmModelReasoningInfo,
-    private readonly defaultMaxTokens?: number,
+    private readonly defaultMaxTokens?: number
   ) {
     super()
   }
 
-  override resolveModel(
-    provider: string,
-    model: string,
-  ): Promise<LlmResolvedModelInfo> {
+  override resolveModel(provider: string, model: string): Promise<LlmResolvedModelInfo> {
     return Promise.resolve({
       provider,
       id: model,
       name: model,
-      ...this.reasoning === undefined ? {} : { reasoning: this.reasoning },
-      ...this.defaultMaxTokens === undefined ? {} : { defaultMaxTokens: this.defaultMaxTokens },
-      ...this.systemPromptUpdate === undefined ? {} : { systemPromptUpdate: this.systemPromptUpdate },
-      ...this.toolUpdate === undefined ? {} : { toolUpdate: this.toolUpdate },
+      ...(this.reasoning === undefined ? {} : { reasoning: this.reasoning }),
+      ...(this.defaultMaxTokens === undefined ? {} : { defaultMaxTokens: this.defaultMaxTokens }),
+      ...(this.systemPromptUpdate === undefined ? {} : { systemPromptUpdate: this.systemPromptUpdate }),
+      ...(this.toolUpdate === undefined ? {} : { toolUpdate: this.toolUpdate })
     })
   }
 
-  async * stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
+  async *stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
     this.requests.push(options)
     const entry = this.script.shift()
     if (!entry) throw new Error('MockAdapter: script exhausted')
@@ -107,16 +100,34 @@ export class MockAdapter extends LlmAdapter {
       yield { type: 'block-start', index: 0, blockType: 'text' }
       yield { type: 'text-delta', index: 0, text: 'partial' }
       await new Promise<void>((_resolve, reject) => {
-        if (options.signal?.aborted) { reject(new Error('aborted')); return }
-        options.signal?.addEventListener('abort', () => { reject(new Error('aborted')) }, { once: true })
+        if (options.signal?.aborted) {
+          reject(new Error('aborted'))
+          return
+        }
+        options.signal?.addEventListener(
+          'abort',
+          () => {
+            reject(new Error('aborted'))
+          },
+          { once: true }
+        )
       })
       return
     }
     if (typeof entry === 'object' && !Array.isArray(entry) && 'hangAfter' in entry) {
       for (const chunk of entry.hangAfter) yield chunk
       await new Promise<void>((_resolve, reject) => {
-        if (options.signal?.aborted) { reject(new Error('aborted')); return }
-        options.signal?.addEventListener('abort', () => { reject(new Error('aborted')) }, { once: true })
+        if (options.signal?.aborted) {
+          reject(new Error('aborted'))
+          return
+        }
+        options.signal?.addEventListener(
+          'abort',
+          () => {
+            reject(new Error('aborted'))
+          },
+          { once: true }
+        )
       })
       return
     }
@@ -124,9 +135,20 @@ export class MockAdapter extends LlmAdapter {
       yield { type: 'block-start', index: 0, blockType: 'text' }
       yield { type: 'text-delta', index: 0, text: 'partial' }
       await new Promise<void>((_resolve, reject) => {
-        const fail = (): void => { reject(new Error('aborted')) }
-        if (options.signal?.aborted) { setTimeout(fail, 50); return }
-        options.signal?.addEventListener('abort', () => { setTimeout(fail, 50) }, { once: true })
+        const fail = (): void => {
+          reject(new Error('aborted'))
+        }
+        if (options.signal?.aborted) {
+          setTimeout(fail, 50)
+          return
+        }
+        options.signal?.addEventListener(
+          'abort',
+          () => {
+            setTimeout(fail, 50)
+          },
+          { once: true }
+        )
       })
       return
     }

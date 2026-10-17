@@ -1,0 +1,97 @@
+# Workflow-owned release chain, the same shape as dsh-agent-plugins-market:
+# release-please (manifest mode) opens the Release PR; merging it tags, creates the GitHub
+# Release, and publishes npm from that exact tag through OIDC trusted publishing.
+#
+# The host support gate runs before release-please so a drifting tree never becomes a tag with
+# no installable artifact behind it, and prepack re-checks it inside the publish job.
+name: npm-publish
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Force this exact version (e.g. 0.2.0). Empty = derive from conventional commits.'
+        required: false
+        default: ''
+        type: string
+  push:
+    branches: [main]
+    # Documentation, CI, and release bookkeeping must not open a release PR.
+    paths-ignore:
+      - '.github/**'
+      - 'CHANGELOG.md'
+      - '.release-please-*'
+      - 'README.md'
+      - 'README.zh.md'
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    outputs:
+      release_created: ${{ steps.release-please.outputs.release_created }}
+      tag_name: ${{ steps.release-please.outputs.tag_name }}
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Verify the host support window
+        run: pnpm run check:host-support
+
+      # The action read of release-as is ignored in manifest mode; a Release-As commit footer is
+      # the pinned-version path that actually works.
+      - name: Pin the requested version with a Release-As footer
+        if: inputs.version != ''
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit --allow-empty -m "chore(release): pin this release to ${VERSION}" -m "Release-As: ${VERSION}"
+          git push origin HEAD:main
+
+      - uses: googleapis/release-please-action@v5
+        id: release-please
+        with:
+          config-file: .release-please-config.json
+
+  npm-publish:
+    needs: release-please
+    if: needs.release-please.outputs.release_created == 'true'
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Check out released tag
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org/
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Run quality gates and tests
+        run: pnpm run check:refactor && pnpm run test
+      - name: Publish to npm through OIDC trusted publishing
+        run: pnpm publish --no-git-checks --provenance

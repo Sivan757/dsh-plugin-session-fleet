@@ -9,5 +9,5 @@
       config:
         allowCrossWorkspace: false
         maxListRows: 50
-        maxReadMessages: 50
         maxMessageChars: 20000
+        includeSubagents: false

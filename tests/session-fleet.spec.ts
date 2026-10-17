@@ -11,7 +11,7 @@ import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-test
 import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import JsonlSessionPersistence from '@deepseek-ai/dsh-session-persistence-jsonl'
+import { jsonlPersistencePlugin as JsonlSessionPersistence } from '../testkit/jsonl-persistence.ts'
 import SessionQueryEngine from '@deepseek-ai/dsh-session-query'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
@@ -60,7 +60,7 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
     allowCrossWorkspace: config.allowCrossWorkspace ?? false,
     maxListRows: config.maxListRows ?? 50,
     maxMessageChars: config.maxMessageChars ?? 20_000,
-    includeSubagents: config.includeSubagents ?? false,
+    includeSubagents: config.includeSubagents ?? false
   }
   const ctx = new Context()
   contexts.add(ctx)
@@ -76,8 +76,7 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
   const lead = await ctx.agentLoop.create(SessionId('fleet-lead'), { provider: 'mock', model: 'mock' }, { cwd })
   const other = await ctx.agentLoop.create(SessionId('fleet-other'), { provider: 'mock', model: 'mock' }, { cwd })
   const foreign = await ctx.agentLoop.create(SessionId('fleet-foreign'), { provider: 'mock', model: 'mock' }, { cwd: '/somewhere-else' })
-  const notFound = (sessionId: SessionId) =>
-    ({ error: new RemoteError('session/not-found', `session "${sessionId}" not found`, { sessionId }) })
+  const notFound = (sessionId: SessionId) => ({ error: new RemoteError('session/not-found', `session "${sessionId}" not found`, { sessionId }) })
   const stub = {
     resolveAgent: vi.fn(async (sessionId: SessionId) => {
       const found = ctx.agents.get(sessionId)
@@ -90,8 +89,8 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
         running: false,
         agentAvailable: true,
         blank: false,
-        cwd: target.session.header.cwd,
-      })),
+        cwd: target.session.header.cwd
+      }))
     })),
     search: vi.fn(async () => ({ items: [{ sessionId: 'fleet-lead', snippet: 'needle match' }], hasMore: false })),
     inspect: vi.fn(async (sessionId: SessionId) => {
@@ -100,16 +99,12 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
       return { meta: found.session.header, inheritedEventCount: 0, events: [...found.session.snapshotEvents()] }
     }),
     create: vi.fn(async (request: { cwd?: string }) => {
-      const created = await ctx.agentLoop.create(
-        SessionId(`fleet-new-${ctx.agents.list().length}`),
-        { provider: 'mock', model: 'mock' },
-        { cwd: request.cwd ?? cwd },
-      )
+      const created = await ctx.agentLoop.create(SessionId(`fleet-new-${ctx.agents.list().length}`), { provider: 'mock', model: 'mock' }, { cwd: request.cwd ?? cwd })
       return { sessionId: created.id }
-    }),
+    })
   }
   ctx.provide('sessionController', stub as never)
-    ctx.provide('workspaceRegistry', { list: () => [] } as any)
+  ctx.provide('workspaceRegistry', { list: () => [] } as any)
   const fleetFiber = await ctx.plugin(fleet, full)
   return { ctx, lead, other, foreign, fleetFiber }
 }
@@ -120,12 +115,12 @@ function execute(ctx: Context, agent: Agent | undefined, name: string, args: unk
     name,
     arguments: args,
     signal,
-    ...agent === undefined ? {} : { agent },
+    ...(agent === undefined ? {} : { agent })
   })
 }
 
 function text(result: Awaited<ReturnType<typeof execute>>): string {
-  return result.content.flatMap(block => block.type === 'text' ? [block.text] : []).join('')
+  return result.content.flatMap(block => (block.type === 'text' ? [block.text] : [])).join('')
 }
 
 /** Assert one executor failure result carries the expected tool diagnostic. */
@@ -134,12 +129,7 @@ function expectToolError(result: Awaited<ReturnType<typeof execute>>, fragment: 
   expect(text(result)).toContain(fragment)
 }
 
-const FLEET_TOOLS = [
-  'list_sessions',
-  'search_sessions',
-  'create_session',
-  'send_to_session',
-].sort()
+const FLEET_TOOLS = ['list_sessions', 'search_sessions', 'create_session', 'send_to_session'].sort()
 
 describe('session-fleet tools', () => {
   it('lists visible sessions, filters by cwd, and validates limit bounds', async () => {
@@ -181,31 +171,34 @@ describe('session-fleet tools', () => {
     const explicit = JSON.parse(text(await execute(ctx, lead, 'create_session', { cwd: '/tmp' }))) as { sessionId: string }
     expect(ctx.agents.get(SessionId(explicit.sessionId))!.session.header.cwd).toBe('/tmp')
 
-    expectToolError(
-      await execute(ctx, lead, 'create_session', { cwd: '/tmp', workspace_id: 'ws' }),
-      'accepts cwd or workspace_id, not both',
-    )
+    expectToolError(await execute(ctx, lead, 'create_session', { cwd: '/tmp', workspace_id: 'ws' }), 'accepts cwd or workspace_id, not both')
   })
 
   it('queues and steers a fleet message and proves source identity in the target log', async () => {
     const { ctx, lead, other } = await setup()
-    const sent = JSON.parse(text(await execute(ctx, lead, 'send_to_session', {
-      session_id: 'fleet-other', message: 'please review the diff',
-    }))) as { sessionId: string; delivery: string; accepted: boolean }
+    const sent = JSON.parse(
+      text(
+        await execute(ctx, lead, 'send_to_session', {
+          session_id: 'fleet-other',
+          message: 'please review the diff'
+        })
+      )
+    ) as { sessionId: string; delivery: string; accepted: boolean }
     expect(sent).toEqual({ sessionId: 'fleet-other', delivery: 'queue', accepted: true })
     expect(other.status).toBe('idle')
 
     await other.whenIdle()
-    const fleetMessage = other.session.snapshotEvents().find(event =>
-      event.type === 'user/message'
-      && event.data.source.kind === 'session-fleet'
-      && event.data.source.senderSessionId === 'fleet-lead')
+    const fleetMessage = other.session
+      .snapshotEvents()
+      .find(event => event.type === 'user/message' && event.data.source.kind === 'session-fleet' && event.data.source.senderSessionId === 'fleet-lead')
     expect(fleetMessage).toBeDefined()
     expect(JSON.stringify(fleetMessage!.data.content)).toContain('please review the diff')
     expect(JSON.stringify(fleetMessage!.data.content)).toContain('peer-agent input')
 
     const steered = await execute(ctx, lead, 'send_to_session', {
-      session_id: 'fleet-other', message: 'mid-turn note', delivery: 'steer',
+      session_id: 'fleet-other',
+      message: 'mid-turn note',
+      delivery: 'steer'
     })
     expect(steered.isError, text(steered)).toBe(false)
     await other.whenIdle()
@@ -215,14 +208,8 @@ describe('session-fleet tools', () => {
     const { ctx, lead } = await setup()
     expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-missing', message: 'hi' }), 'session/not-found')
     expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-lead', message: 'note' }), 'targets another session')
-    expectToolError(
-      await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-other', message: 'x'.repeat(20_001) }),
-      'exceeds 20000 characters',
-    )
-    expectToolError(
-      await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-foreign', message: 'hello' }),
-      'cross-workspace delivery is disabled',
-    )
+    expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-other', message: 'x'.repeat(20_001) }), 'exceeds 20000 characters')
+    expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-foreign', message: 'hello' }), 'cross-workspace delivery is disabled')
   })
 
   it('delivers across workspaces when the deployment opts in', async () => {
@@ -230,16 +217,19 @@ describe('session-fleet tools', () => {
     const sent = await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-foreign', message: 'hi' })
     expect(sent.isError, text(sent)).toBe(false)
     await foreign.whenIdle()
-    expect(foreign.session.snapshotEvents().some(event =>
-      event.type === 'user/message' && event.data.source.kind === 'session-fleet')).toBe(true)
+    expect(foreign.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.source.kind === 'session-fleet')).toBe(true)
   })
 
   it('installs the complete scoped schema and policy, and disposes with the plugin fiber', async () => {
     const { ctx, lead, fleetFiber } = await setup()
     const scope = scopeOf(lead.ctx)
     const assembly = await ctx.systemPrompt.assemble({ scope })
-    expect(assembly.tools.map(schema => schema.name).filter(name => FLEET_TOOLS.includes(name)).sort())
-      .toEqual(FLEET_TOOLS)
+    expect(
+      assembly.tools
+        .map(schema => schema.name)
+        .filter(name => FLEET_TOOLS.includes(name))
+        .sort()
+    ).toEqual(FLEET_TOOLS)
     const prompt = renderPrompt(assembly)
     expect(prompt).toContain('peer-agent input')
     expect(prompt).toContain('untrusted peer input')
@@ -258,8 +248,7 @@ describe('session-fleet tools', () => {
     expect(ctx.tools.get('list_sessions', secondScope)).toBeDefined()
     const leadScope = scopeOf(lead.ctx)
     expect(ctx.tools.get('list_sessions', leadScope)).toBeDefined()
-    expect(ctx.tools.get('list_sessions', leadScope))
-      .not.toBe(ctx.tools.get('list_sessions', secondScope))
+    expect(ctx.tools.get('list_sessions', leadScope)).not.toBe(ctx.tools.get('list_sessions', secondScope))
   })
 })
 
@@ -311,13 +300,9 @@ describe('session-fleet failure paths and optionality', () => {
   it('reports flush failures instead of claiming acceptance', async () => {
     const { ctx, lead, other } = await setup()
     const spy = vi.spyOn(ctx.sessions, 'flush').mockResolvedValue(false)
-    expectToolError(
-      await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-other', message: 'hi' }),
-      'session persistence did not acknowledge the message',
-    )
+    expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-other', message: 'hi' }), 'session persistence did not acknowledge the message')
     expect(spy).toHaveBeenCalled()
-    expect(other.session.snapshotEvents().some(event =>
-      event.type === 'user/message' && event.data.source.kind === 'session-fleet')).toBe(true)
+    expect(other.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.source.kind === 'session-fleet')).toBe(true)
   })
 
   it('rolls back partial installs when a scope registration throws', async () => {
@@ -335,12 +320,20 @@ describe('session-fleet failure paths and optionality', () => {
       resolveAgent: vi.fn(async () => ({ error: new RemoteError('session/not-found', 'no', { sessionId: agent.id }) })),
       list: vi.fn(async () => ({ items: [] })),
       search: vi.fn(async () => ({ items: [], hasMore: false })),
-      inspect: vi.fn(async () => { throw new Error('unused') }),
-      create: vi.fn(async () => ({ sessionId: agent.id })),
+      inspect: vi.fn(async () => {
+        throw new Error('unused')
+      }),
+      create: vi.fn(async () => ({ sessionId: agent.id }))
     }
     ctx.provide('sessionController', stub as never)
-    const breaking = vi.spyOn(ctx.tools, 'register').mockImplementationOnce(() => { throw new Error('registration exploded') })
-    try { await ctx.plugin(fleet) } catch (error) { expect(String(error)).toContain('registration exploded') }
+    const breaking = vi.spyOn(ctx.tools, 'register').mockImplementationOnce(() => {
+      throw new Error('registration exploded')
+    })
+    try {
+      await ctx.plugin(fleet)
+    } catch (error) {
+      expect(String(error)).toContain('registration exploded')
+    }
     breaking.mockRestore()
   })
 
@@ -354,20 +347,29 @@ describe('session-fleet failure paths and optionality', () => {
 })
 
 describe('session-fleet coverage completion', () => {
-
   it('omits absent parent and origin fields in list rows', async () => {
     const { ctx, lead } = await setup()
     const stub = ctx.sessionController as unknown as { list: ReturnType<typeof vi.fn> }
     stub.list.mockResolvedValueOnce({
-      items: [{
-        sessionId: 'fleet-plain', updatedAt: 0, running: false, agentAvailable: false, blank: true,
-      }],
+      items: [
+        {
+          sessionId: 'fleet-plain',
+          updatedAt: 0,
+          running: false,
+          agentAvailable: false,
+          blank: true
+        }
+      ]
     })
     const listed = JSON.parse(text(await execute(ctx, lead, 'list_sessions', {}))) as {
       sessions: Array<Record<string, unknown>>
     }
     expect(listed.sessions[0]).toEqual({
-      sessionId: 'fleet-plain', updatedAt: new Date(0).toISOString(), running: false, agentAvailable: false, blank: true,
+      sessionId: 'fleet-plain',
+      updatedAt: new Date(0).toISOString(),
+      running: false,
+      agentAvailable: false,
+      blank: true
     })
   })
 
@@ -392,33 +394,45 @@ describe('session-fleet coverage completion', () => {
     const { ctx } = await setup()
     const handle = await ctx.agents.create({
       sessionId: SessionId('fleet-disposal'),
-      agentOptions: { provider: 'mock', model: 'mock' },
+      agentOptions: { provider: 'mock', model: 'mock' }
     })
     const scope = scopeOf(handle.agent.ctx)
     expect(ctx.tools.get('list_sessions', scope)).toBeDefined()
     await handle.dispose()
     expect(ctx.tools.get('list_sessions', scope)).toBeUndefined()
   })
-
 })
 
 describe('session-fleet projection edge values', () => {
-
   it('carries parent and origin fields in list rows when present', async () => {
     const { ctx, lead } = await setup({ includeSubagents: true })
     const stub = ctx.sessionController as unknown as { list: ReturnType<typeof vi.fn> }
     stub.list.mockResolvedValueOnce({
-      items: [{
-        sessionId: 'fleet-child', updatedAt: 8, running: true, agentAvailable: true, blank: false,
-        parentSessionId: 'fleet-lead', origin: 'subagent', cwd: '/tmp',
-      }],
+      items: [
+        {
+          sessionId: 'fleet-child',
+          updatedAt: 8,
+          running: true,
+          agentAvailable: true,
+          blank: false,
+          parentSessionId: 'fleet-lead',
+          origin: 'subagent',
+          cwd: '/tmp'
+        }
+      ]
     })
     const listed = JSON.parse(text(await execute(ctx, lead, 'list_sessions', {}))) as {
       sessions: Array<Record<string, unknown>>
     }
     expect(listed.sessions[0]).toEqual({
-      sessionId: 'fleet-child', updatedAt: new Date(8).toISOString(), running: true, agentAvailable: true,
-      blank: false, parentSessionId: 'fleet-lead', origin: 'subagent', cwd: '/tmp',
+      sessionId: 'fleet-child',
+      updatedAt: new Date(8).toISOString(),
+      running: true,
+      agentAvailable: true,
+      blank: false,
+      parentSessionId: 'fleet-lead',
+      origin: 'subagent',
+      cwd: '/tmp'
     })
   })
 
@@ -429,7 +443,6 @@ describe('session-fleet projection edge values', () => {
 })
 
 describe('session-fleet apply defaults and re-entry', () => {
-
   it('skips a second install when an agent re-enters the created path', async () => {
     const { ctx, lead } = await setup()
     const scope = scopeOf(lead.ctx)
@@ -441,7 +454,6 @@ describe('session-fleet apply defaults and re-entry', () => {
 })
 
 describe('session-fleet partial config defaults', () => {
-
   it('falls back message bound per key with a partial config', async () => {
     const { ctx, lead } = await setup({ allowCrossWorkspace: true, maxMessageChars: 5 })
     expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-foreign', message: 'x'.repeat(6) }), 'exceeds 5 characters')
@@ -455,8 +467,8 @@ describe('session-fleet ownership filtering', () => {
     stub.list.mockResolvedValueOnce({
       items: [
         { sessionId: 'fleet-top', updatedAt: 1, running: false, agentAvailable: false, blank: false, cwd: '/tmp' },
-        { sessionId: 'fleet-child', updatedAt: 2, running: false, agentAvailable: false, blank: false, cwd: '/tmp', origin: 'subagent' },
-      ],
+        { sessionId: 'fleet-child', updatedAt: 2, running: false, agentAvailable: false, blank: false, cwd: '/tmp', origin: 'subagent' }
+      ]
     })
     const listed = JSON.parse(text(await execute(ctx, lead, 'list_sessions', {}))) as {
       sessions: Array<{ sessionId: string }>
@@ -471,8 +483,8 @@ describe('session-fleet ownership filtering', () => {
     stub.list.mockResolvedValueOnce({
       items: [
         { sessionId: 'fleet-top', updatedAt: 1, running: false, agentAvailable: false, blank: false, cwd: '/tmp' },
-        { sessionId: 'fleet-child', updatedAt: 2, running: false, agentAvailable: false, blank: false, cwd: '/tmp', origin: 'subagent' },
-      ],
+        { sessionId: 'fleet-child', updatedAt: 2, running: false, agentAvailable: false, blank: false, cwd: '/tmp', origin: 'subagent' }
+      ]
     })
     const scoped = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { cwd: '/tmp' }))) as {
       sessions: Array<{ sessionId: string }>
@@ -488,8 +500,8 @@ describe('session-fleet ownership filtering', () => {
     stub.list.mockResolvedValueOnce({
       items: [
         { sessionId: 'fleet-top', updatedAt: 1, running: false, agentAvailable: false, blank: false, cwd: '/tmp' },
-        { sessionId: 'fleet-child', updatedAt: 2, running: false, agentAvailable: false, blank: false, cwd: '/tmp', origin: 'subagent' },
-      ],
+        { sessionId: 'fleet-child', updatedAt: 2, running: false, agentAvailable: false, blank: false, cwd: '/tmp', origin: 'subagent' }
+      ]
     })
     const listed = JSON.parse(text(await execute(ctx, lead, 'list_sessions', {}))) as {
       sessions: Array<{ sessionId: string }>
@@ -498,5 +510,4 @@ describe('session-fleet ownership filtering', () => {
     expect(listed.sessions.map(row => row.sessionId).sort()).toEqual(['fleet-child', 'fleet-top'])
     expect(listed.hiddenSubagentSessions).toBeUndefined()
   })
-
 })
