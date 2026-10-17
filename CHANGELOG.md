@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.1](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.2.0...dsh-plugin-session-fleet-v0.2.1) (2026-10-17)
+
+
+### Bug Fixes
+
+* keep the published declarations and skip a duplicate publish ([ec54c3d](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/ec54c3db198b4f0bd09b771e7f554d5ab9302430))
+
 ## [0.2.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.1.0...dsh-plugin-session-fleet-v0.2.0) (2026-10-17)
 
 
