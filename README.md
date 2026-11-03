@@ -15,9 +15,11 @@ The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conserv
 ## Tools installed per agent
 
 - `list_sessions` lists visible sessions with status, activity, and working directory, and starts none of them.
-- `search_sessions` runs a literal full-text search across visible session messages.
+- `search_sessions` runs a full-text search over a local on-disk index of every session, and reaches Chinese two-character terms. It falls back to the Host session search when the index cannot open.
 - `create_session` creates a session in a given cwd or workspace.
 - `send_to_session` delivers a queued or steered message to another session through the DSH session message queue.
+
+The index lives at `~/.dsh/session-fleet/index.db` by default. The first search builds it from every session on this machine, which can take a while on a large history; later searches re-read only sessions whose activity moved. The index stores filtered text (human messages and model replies) in SQLite FTS5, with a purpose-built CJK bigram tokenizer, so `广告` finds `广告点击率` while SQLite's own tokenizer finds nothing.
 
 A delivery carries the dedicated `session-fleet` message source and a peer-agent framing note, so a target never mistakes fleet input for user input. Replies travel back through the same channel.
 
@@ -29,12 +31,13 @@ The plugin declares the host support window `>=0.2.0-rc.2 <0.3.0-0`. Every 0.2.x
 
 ## Configuration
 
-| Key                   | Default | Meaning                                                                             |
-| --------------------- | ------- | ----------------------------------------------------------------------------------- |
-| `allowCrossWorkspace` | `false` | Permit a tool call to reach a session recorded under a different working directory. |
-| `maxListRows`         | `50`    | Upper bound of one `list_sessions` response.                                        |
-| `maxMessageChars`     | `20000` | Upper bound of one `send_to_session` body.                                          |
-| `includeSubagents`    | `false` | Show subagent-owned sessions in list and search. Delivery to them stays refused.    |
+| Key                   | Default                         | Meaning                                                                             |
+| --------------------- | ------------------------------- | ----------------------------------------------------------------------------------- |
+| `allowCrossWorkspace` | `false`                         | Permit a tool call to reach a session recorded under a different working directory. |
+| `maxListRows`         | `50`                            | Upper bound of one `list_sessions` response.                                        |
+| `maxMessageChars`     | `20000`                         | Upper bound of one `send_to_session` body.                                          |
+| `includeSubagents`    | `false`                         | Show subagent-owned sessions in list and search. Delivery to them stays refused.    |
+| `indexPath`           | `~/.dsh/session-fleet/index.db` | Database path of the local full-text index. Delete it to rebuild.                   |
 
 ## Safety model
 

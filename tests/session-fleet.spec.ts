@@ -8,7 +8,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { jsonlPersistencePlugin as JsonlSessionPersistence } from '../testkit/jsonl-persistence.ts'
@@ -56,12 +56,6 @@ interface Fixture {
  * recorded elsewhere.
  */
 async function setup(config: fleet.Config = {}, script: ConstructorParameters<typeof MockAdapter>[0] = []): Promise<Fixture> {
-  const full = {
-    allowCrossWorkspace: config.allowCrossWorkspace ?? false,
-    maxListRows: config.maxListRows ?? 50,
-    maxMessageChars: config.maxMessageChars ?? 20_000,
-    includeSubagents: config.includeSubagents ?? false
-  }
   const ctx = new Context()
   contexts.add(ctx)
   await mountAgentLoopTestDependencies(ctx)
@@ -69,6 +63,13 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
   roots.push(storageRoot)
   const cwd = mkdtempSync(join(tmpdir(), 'dsh-session-fleet-cwd-'))
   roots.push(cwd)
+  const full = {
+    allowCrossWorkspace: config.allowCrossWorkspace ?? false,
+    maxListRows: config.maxListRows ?? 50,
+    maxMessageChars: config.maxMessageChars ?? 20_000,
+    includeSubagents: config.includeSubagents ?? false,
+    indexPath: config.indexPath ?? join(storageRoot, 'index.db')
+  }
   await ctx.plugin(JsonlSessionPersistence, { root: storageRoot })
   await ctx.plugin(TestSessionQuery)
   await ctx.plugin(AgentLoop, { agents: [] })
@@ -153,14 +154,37 @@ describe('session-fleet tools', () => {
     expect(other.status).toBe('idle')
   })
 
-  it('searches sessions through the controller and surfaces hasMore', async () => {
-    const { ctx, lead } = await setup()
+  it('falls back to the Host search when the index cannot open', async () => {
+    const { ctx, lead } = await setup({ indexPath: '/dev/null/nope/index.db' })
     const found = JSON.parse(text(await execute(ctx, lead, 'search_sessions', { query: 'needle' }))) as {
       results: Array<{ sessionId: string; snippet: string }>
       hasMore: boolean
     }
     expect(found.results).toEqual([{ sessionId: 'fleet-lead', snippet: 'needle match' }])
     expect(found.hasMore).toBe(false)
+  })
+
+  it('searches the whole local corpus with Chinese two-character terms', async () => {
+    const { ctx, lead, other } = await setup()
+    other.followup(createUserMessage({ content: [{ type: 'text', text: '上周在广告点击率上做了复盘' }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const found = JSON.parse(text(await execute(ctx, lead, 'search_sessions', { query: '广告' }))) as {
+      results: Array<{ sessionId: string; snippet: string; kind?: string }>
+      hasMore: boolean
+    }
+    expect(found.results.some(hit => hit.sessionId === 'fleet-other' && hit.snippet.includes('[广告]'))).toBe(true)
+    expect(found.results.every(hit => hit.kind === 'user' || hit.kind === 'assistant')).toBe(true)
+    expect(found.hasMore).toBe(false)
+  })
+
+  it('matches Latin terms without leaking unrelated entries', async () => {
+    const { ctx, lead, other } = await setup()
+    other.followup(createUserMessage({ content: [{ type: 'text', text: 'Review the SESSIONGRAPH parser' }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const found = JSON.parse(text(await execute(ctx, lead, 'search_sessions', { query: 'sessiongraph' }))) as {
+      results: Array<{ sessionId: string; snippet: string }>
+    }
+    expect(found.results.map(hit => hit.sessionId)).toEqual(['fleet-other'])
   })
 
   it('creates sessions with the caller cwd or an explicit cwd, rejecting conflicts', async () => {
