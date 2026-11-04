@@ -1,8 +1,6 @@
 /** Scoped model-facing tools for discovering, reading, creating, and messaging DSH sessions. */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 /**
  * Apply a domain brand to a value the domain already admitted.
@@ -26,13 +24,11 @@ import type { WorkspaceId } from '@deepseek-ai/dsh-workspace/types'
 import type {} from '@deepseek-ai/dsh-workspace'
 import type {} from '@deepseek-ai/dsh-api-session-controller'
 import type { SessionSummary } from '@deepseek-ai/dsh-api-session-controller/types'
-import { openSearchIndex } from './search-index.ts'
-import type { SearchIndex } from './search-index.ts'
 
 /** Cordis plugin name. */
 export const name = 'tool-session-fleet'
 /** Services required by the Session Fleet tool plugin. */
-export const inject = ['agents', 'sessions', 'sessionController', 'sessionQuery', 'workspaceRegistry', 'tools', 'systemPrompt']
+export const inject = ['agents', 'sessions', 'sessionController', 'workspaceRegistry', 'tools', 'systemPrompt']
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -51,8 +47,6 @@ export interface Config {
   readonly maxMessageChars?: number
   /** Expose subagent-owned sessions to list, search, and read. Delivery stays refused. */
   readonly includeSubagents?: boolean
-  /** Database path for the local full-text index over ordinary sessions. */
-  readonly indexPath?: string
 }
 
 /** Loader schema for the Session Fleet tool plugin. */
@@ -60,8 +54,7 @@ export const Config: z<Config> = z.object({
   allowCrossWorkspace: z.boolean().default(false),
   maxListRows: z.number().default(50),
   maxMessageChars: z.number().default(20_000),
-  includeSubagents: z.boolean().default(false),
-  indexPath: z.string().default('~/.dsh/session-fleet/index.db')
+  includeSubagents: z.boolean().default(false)
 })
 
 /** Model-facing collaboration guidance for fleet tools. */
@@ -106,9 +99,7 @@ const SEARCH_VALUE_SCHEMA = {
         additionalProperties: false,
         properties: {
           sessionId: { type: 'string', required: true },
-          snippet: { type: 'string', required: true },
-          time: { type: 'integer' },
-          kind: { type: 'string', enum: ['user', 'assistant'] }
+          snippet: { type: 'string', required: true }
         }
       }
     },
@@ -155,11 +146,6 @@ function callingAgent(agent: Agent | undefined, toolName: string): Agent {
   return agent
 }
 
-/** Expand a leading `~` against the user's home directory. */
-function expandHome(path: string): string {
-  return path.startsWith('~/') ? join(homedir(), path.slice(2)) : path
-}
-
 /** One stable tool-result failure line for a controller rejection. */
 function errorText(error: unknown): string {
   if (error instanceof RemoteError) return `${error.code}: ${error.message}`
@@ -186,7 +172,7 @@ function positiveInt(value: number | undefined, max: number): boolean {
 }
 
 /** Register the complete Session Fleet tool set in one exact Agent scope. */
-function install(agent: Agent, ctx: Context, config: Required<Config>, getIndex: () => Promise<SearchIndex>): () => void {
+function install(agent: Agent, ctx: Context, config: Required<Config>): () => void {
   const scoped = agent.ctx
   const disposers: Array<() => unknown> = []
   const register = (disposer: () => unknown): void => {
@@ -246,21 +232,6 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, getIndex:
           output: jsonOutput(SEARCH_VALUE_SCHEMA),
           async execute(args, exec) {
             callingAgent(exec.agent, 'search_sessions')
-            try {
-              const searcher = await getIndex()
-              const { hits, hasMore } = await searcher.search(ctx, args.query, 20, exec.signal)
-              return {
-                results: hits.map(hit => ({
-                  sessionId: hit.sessionId,
-                  snippet: hit.snippet,
-                  time: hit.time,
-                  kind: hit.kind
-                })),
-                hasMore
-              }
-            } catch {
-              // shortcut: a missing or broken index falls back to the Host search; no retry within this call
-            }
             try {
               const { items, hasMore } = await ctx.sessionController.search({ query: args.query }, exec.signal)
               return { results: items.map(item => ({ ...item })), hasMore }
@@ -383,21 +354,10 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, getIndex:
 
 /** Install Session Fleet tools in every live or subsequently published Agent scope. */
 export function apply(ctx: Context, config: Required<Config>): void {
-  let opening: Promise<SearchIndex> | undefined
-  const getIndex = (): Promise<SearchIndex> => {
-    if (opening === undefined) {
-      opening = openSearchIndex(expandHome(config.indexPath))
-      // A failed open must not poison later calls.
-      opening.catch(() => {
-        opening = undefined
-      })
-    }
-    return opening
-  }
   const installed = new Map<Agent, () => void>()
   const maybeInstall = (agent: Agent): void => {
     if (installed.has(agent)) return
-    installed.set(agent, install(agent, ctx, config, getIndex))
+    installed.set(agent, install(agent, ctx, config))
   }
   for (const agent of ctx.agents.list()) maybeInstall(agent)
   ctx.on('agent/created', ({ agent }) => {
@@ -411,8 +371,6 @@ export function apply(ctx: Context, config: Required<Config>): void {
     () => () => {
       for (const dispose of installed.values()) dispose()
       installed.clear()
-      void opening?.then(index => index.close()).catch(() => undefined)
-      opening = undefined
     },
     'tool-session-fleet.scopedTools()'
   )

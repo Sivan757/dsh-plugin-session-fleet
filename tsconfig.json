@@ -17,8 +17,7 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "rootDir": "src",
-    "outDir": "lib/types",
-    "types": ["node"]
+    "outDir": "lib/types"
   },
   "include": ["src"]
 }
