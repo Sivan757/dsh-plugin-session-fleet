@@ -15,7 +15,7 @@ import { jsonlPersistencePlugin as JsonlSessionPersistence } from '../testkit/js
 import SessionQueryEngine, { SessionSearchCursor } from '@deepseek-ai/dsh-session-query'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
-import { MockAdapter } from '../testkit/mock-adapter.ts'
+import { MockAdapter, textResponse, toolCallResponse } from '../testkit/mock-adapter.ts'
 import * as fleet from '../src/index.ts'
 
 const SIGNAL = new AbortController().signal
@@ -104,11 +104,6 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
         cwd: target.session.header.cwd
       }))
     })),
-    inspect: vi.fn(async (sessionId: SessionId) => {
-      const found = ctx.agents.get(sessionId)
-      if (found === undefined) throw notFound(sessionId).error
-      return { meta: found.session.header, inheritedEventCount: 0, events: [...found.session.snapshotEvents()] }
-    }),
     create: vi.fn(async (request: { cwd?: string }) => {
       const created = await ctx.agentLoop.create(SessionId(`fleet-new-${ctx.agents.list().length}`), { provider: 'mock', model: 'mock' }, { cwd: request.cwd ?? cwd })
       return { sessionId: created.id }
@@ -265,6 +260,135 @@ describe('fleet discovery continuation', () => {
   })
 })
 
+describe('native inspection interaction', () => {
+  it('returns the backend locator and a directly executable read example', async () => {
+    const { ctx, lead, other } = await setup()
+    other.followup(createUserMessage({ content: [{ type: 'text', text: 'native detail marker' }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const persistence = ctx.get('sessionPersistence')!
+    const snapshot = (await persistence.stat(other.id))!
+    vi.spyOn(persistence, 'stat').mockResolvedValueOnce({ ...snapshot, location: { kind: 'fixture-native', path: '/fixture/original-session.zst' } })
+    const outline = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id })))
+    expect(outline.mode).toBe('outline')
+    expect(outline.source).toMatchObject({ status: 'located', location: { kind: 'fixture-native', path: '/fixture/original-session.zst' } })
+    expect(outline.detailAccess.search).toMatchObject({ tool: 'inspect_session', arguments: { mode: 'search', session_id: other.id }, requiredArguments: ['query'] })
+    const action = outline.detailAccess.read
+    expect(action.requiredArguments).toEqual([])
+    const detail = JSON.parse(text(await execute(ctx, lead, action.tool, action.arguments)))
+    expect(detail.mode).toBe('read')
+    expect(detail.event.seq).toBe(action.arguments.seq)
+    expect(detail.context.every((event: { seq: number }) => event.seq !== detail.event.seq)).toBe(true)
+  })
+
+  it('keeps native event data complete and limits surrounding previews', async () => {
+    const { ctx, lead, other } = await setup()
+    const body = 'raw-body-'.repeat(1000)
+    other.followup(createUserMessage({ content: [{ type: 'text', text: body }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const target = other.session.snapshotEvents().find(event => event.type === 'user/message')!
+    const native = vi.spyOn(ctx.sessionQuery, 'readEvent')
+    const detail = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode: 'read', seq: target.seq, before: 2, after: 2 })))
+    expect(detail.event).toEqual(target)
+    expect(detail.context.length).toBeLessThanOrEqual(4)
+    expect(detail.context.every((event: { text?: string }) => event.text === undefined || event.text.length <= 300)).toBe(true)
+    expect(native.mock.calls[0]?.[0]).toMatchObject({ sessionId: other.id, seq: target.seq, before: 2, after: 2 })
+    expect(native.mock.calls[0]?.[1]).toBe(SIGNAL)
+  })
+
+  it('uses native session event search and offers a read call for the hit', async () => {
+    const { ctx, lead, other } = await setup()
+    other.followup(createUserMessage({ content: [{ type: 'text', text: 'event-search-marker' }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const target = other.session.snapshotEvents().find(event => event.type === 'user/message')!
+    const native = vi.spyOn(ctx.sessionQuery, 'searchEvents').mockResolvedValueOnce({
+      session: other.session.header,
+      items: [{ sessionId: other.id, seq: target.seq, time: target.time, type: target.type, surface: 'current', snippet: 'event-search-marker' }],
+      nextCursor: SessionSearchCursor('native-more')
+    })
+    const searched = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode: 'search', query: 'event-search-marker', limit: 1 })))
+    expect(native.mock.calls[0]?.[0]).toMatchObject({ sessionId: other.id, query: 'event-search-marker', limit: 1 })
+    expect(native.mock.calls[0]?.[1]?.signal).toBe(SIGNAL)
+    expect(searched).toMatchObject({ mode: 'search', hasMore: true, results: [{ seq: target.seq, snippet: 'event-search-marker' }] })
+    expect(searched.nextCursor).toBeUndefined()
+    expect(searched.guidance).toContain('narrow')
+    expect(searched.detailAccess.read.arguments).toMatchObject({ session_id: other.id, mode: 'read', seq: target.seq })
+  })
+
+  it('reads raw tool results and clips actual neighboring call arguments', async () => {
+    const { ctx, lead, other } = await setup({}, [toolCallResponse('native-list', 'list_sessions', { cwd: 'long-context-'.repeat(100) }), textResponse('finished')])
+    other.followup(createUserMessage({ content: [{ type: 'text', text: 'exercise a raw tool result' }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const target = other.session.snapshotEvents().find(event => event.type === 'tool/result')!
+    expect(target).toBeDefined()
+    const detail = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode: 'read', seq: target.seq, before: 10, after: 0 })))
+    expect(detail.event).toEqual(target)
+    const call = detail.context.find((event: { type: string }) => event.type === 'tool/call')
+    expect(call).toMatchObject({ source: 'list_sessions', truncated: true })
+    expect(call.text.length).toBeLessThanOrEqual(300)
+    expect(call.fullLength).toBeGreaterThan(1000)
+  })
+
+  it('rejects event search hits whose session differs from the authorized target', async () => {
+    const { ctx, lead, other } = await setup()
+    vi.spyOn(ctx.sessionQuery, 'searchEvents').mockResolvedValueOnce({
+      session: other.session.header,
+      items: [{ sessionId: SessionId('hidden-session'), seq: SessionSeq(0), time: 0, type: 'user/message', surface: 'current', snippet: 'must not be disclosed' }]
+    })
+    const result = await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode: 'search', query: 'marker' })
+    expectToolError(result, 'different session')
+    expect(text(result)).not.toContain('must not be disclosed')
+  })
+
+  it('retains useful access instructions when no physical locator is supplied', async () => {
+    const { ctx, lead, other } = await setup()
+    const persistence = ctx.get('sessionPersistence')!
+    const snapshot = (await persistence.stat(other.id))!
+    vi.spyOn(persistence, 'stat').mockResolvedValueOnce({ header: snapshot.header, revision: snapshot.revision })
+    const outline = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id })))
+    expect(outline.source.status).toBe('unavailable')
+    expect(outline.source.location).toBeUndefined()
+    expect(outline.detailAccess.search.tool).toBe('inspect_session')
+  })
+
+  it('reports a locator lookup failure without discarding the outline', async () => {
+    const { ctx, lead, other } = await setup()
+    vi.spyOn(ctx.get('sessionPersistence')!, 'stat').mockRejectedValueOnce(new Error('locator failed'))
+    const outline = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id })))
+    expect(outline.source).toMatchObject({ status: 'error', reason: expect.stringContaining('locator failed') })
+    expect(outline.counts).toBeDefined()
+  })
+
+  it.each(['outline', 'search', 'read'])('checks Host visibility before native %s reads or locator lookup', async mode => {
+    const { ctx, lead, other } = await setup()
+    vi.spyOn(ctx.sessionController, 'list').mockResolvedValueOnce({ items: [] })
+    const read = vi.spyOn(ctx.sessionQuery, 'readEvent')
+    const search = vi.spyOn(ctx.sessionQuery, 'searchEvents')
+    const locate = vi.spyOn(ctx.get('sessionPersistence')!, 'stat')
+    const args = mode === 'search' ? { query: 'marker' } : mode === 'read' ? { seq: 0 } : {}
+    expectToolError(await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode, ...args }), 'not accessible')
+    expect(read).not.toHaveBeenCalled()
+    expect(search).not.toHaveBeenCalled()
+    expect(locate).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    [{ mode: 'read' }, 'seq'],
+    [{ mode: 'read', seq: -1 }, 'seq'],
+    [{ mode: 'read', seq: 0, before: 11 }, 'before'],
+    [{ mode: 'read', seq: 0, after: -1 }, 'after'],
+    [{ mode: 'read', seq: 0, query: 'mixed' }, 'query'],
+    [{ mode: 'search' }, 'query'],
+    [{ mode: 'search', query: ' ' }, 'query'],
+    [{ mode: 'search', query: 'x', seq: 0 }, 'seq'],
+    [{ mode: 'search', query: 'x', transcript: true }, 'transcript'],
+    [{ mode: 'search', query: 'x', limit: 0 }, 'limit'],
+    [{ mode: 'outline', query: 'mixed' }, 'query']
+  ])('rejects an invalid mode combination %j', async (args, message) => {
+    const { ctx, lead, other } = await setup()
+    expectToolError(await execute(ctx, lead, 'inspect_session', { session_id: other.id, ...args }), message)
+  })
+})
+
 describe('session-fleet tools', () => {
   it('returns an outline without creating a transcript unless requested', async () => {
     const { ctx, lead, other } = await setup()
@@ -349,15 +473,16 @@ describe('session-fleet tools', () => {
     expect(readFileSync(outline.transcriptPath, 'utf8')).toContain(long)
   })
 
-  it('refuses subagent sessions in inspect by default', async () => {
-    const { ctx, lead } = await setup()
-    const stub = ctx.sessionController as unknown as { inspect: ReturnType<typeof vi.fn> }
-    stub.inspect.mockResolvedValueOnce({
-      meta: { version: 3, id: SessionId('fleet-child'), createdAt: 0, isSeeded: false, cwd: '/tmp', origin: 'subagent' },
-      inheritedEventCount: 0,
-      events: []
-    })
-    expectToolError(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-child' }), 'subagent session owned by its parent')
+  it.each(['outline', 'search', 'read'])('refuses subagent sessions in %s mode before native access', async mode => {
+    const { ctx, lead, other } = await setup()
+    const rows = await ctx.sessionController.list({}, SIGNAL)
+    vi.spyOn(ctx.sessionController, 'list').mockResolvedValueOnce({ items: rows.items.map(row => (row.sessionId === other.id ? { ...row, origin: 'subagent' } : row)) })
+    const read = vi.spyOn(ctx.sessionQuery, 'readEvent')
+    const search = vi.spyOn(ctx.sessionQuery, 'searchEvents')
+    const args = mode === 'search' ? { query: 'marker' } : mode === 'read' ? { seq: 0 } : {}
+    expectToolError(await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode, ...args }), 'Subagent sessions are hidden')
+    expect(read).not.toHaveBeenCalled()
+    expect(search).not.toHaveBeenCalled()
   })
 
   it('creates sessions with the caller cwd or an explicit cwd, rejecting conflicts', async () => {
@@ -538,9 +663,6 @@ describe('session-fleet failure paths and optionality', () => {
       resolveAgent: vi.fn(async () => ({ error: new RemoteError('session/not-found', 'no', { sessionId: agent.id }) })),
       list: vi.fn(async () => ({ items: [] })),
       search: vi.fn(async () => ({ items: [], hasMore: false })),
-      inspect: vi.fn(async () => {
-        throw new Error('unused')
-      }),
       create: vi.fn(async () => ({ sessionId: agent.id }))
     }
     ctx.provide('sessionController', stub as never)

@@ -19,7 +19,7 @@ import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, expect, it } from 'vitest'
+import { afterEach, expect, it, vi } from 'vitest'
 import * as yaml from 'js-yaml'
 import { jsonlPersistencePlugin } from '../testkit/jsonl-persistence.ts'
 import { MockAdapter, textResponse, toolCallResponse } from '../testkit/mock-adapter.ts'
@@ -143,6 +143,70 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   expect(new Set(ids).size).toBe(ids.length)
   expect(ids).toEqual(expect.arrayContaining([inherited.sessionId, second.sessionId]))
   expect(paged.at(-1).hasMore).toBe(false)
+  const coldId = SessionId('fleet-native-cold-fixture')
+  const original = ctx.agents.get(SessionId(inherited.sessionId))!.session
+  const persisted = await ctx.get('sessionPersistence')!.create({ ...original.header, id: coldId })
+  try {
+    await persisted.append(original.snapshotEvents())
+    await persisted.flush()
+  } finally {
+    await persisted.close()
+  }
+  expect(ctx.agents.get(coldId)).toBeUndefined()
+  const resume = vi.spyOn(ctx.sessionController, 'resolveAgent')
+  const nativeSteps: string[] = []
+  const capture = (options: import('@deepseek-ai/dsh-llm').GenerateOptions) => {
+    const text = toolText(options)
+    expect(text).not.toMatch(/^Error:/)
+    const value = JSON.parse(text)
+    nativeSteps.push(text)
+    return value
+  }
+  ctx.get('llm')!.registerAdapter(
+    ['fleet-native-details'],
+    new MockAdapter([
+      toolCallResponse('native-outline', 'inspect_session', { session_id: coldId }),
+      options => {
+        const outline = capture(options)
+        return toolCallResponse('native-search', outline.detailAccess.search.tool, { ...outline.detailAccess.search.arguments, query: 'loader smoke message' })
+      },
+      options => {
+        const hits = capture(options)
+        const hit = hits.results.find((event: { type: string }) => event.type === 'user/message')
+        expect(hit).toBeDefined()
+        return toolCallResponse('native-read', hits.detailAccess.read.tool, { ...hits.detailAccess.read.arguments, seq: hit.seq })
+      },
+      options => {
+        capture(options)
+        return textResponse('native detail verified')
+      }
+    ])
+  )
+  const reader = await ctx.agentLoop.create(SessionId('fleet-native-reader'), { provider: 'fleet-native-details', model: 'mock' }, { cwd: workspace.path })
+  reader.followup(createUserMessage({ content: [{ type: 'text', text: 'Inspect the selected archived session and read its matching original event.' }], source: { kind: 'user' } }))
+  await reader.whenIdle()
+  expect(nativeSteps.map(text => JSON.parse(text).mode)).toEqual(['outline', 'search', 'read'])
+  const readEvent = JSON.parse(nativeSteps[2]!).event
+  expect(readEvent).toEqual(original.snapshotEvents().find(event => event.seq === readEvent.seq))
+  expect(readEvent.data.content.some((block: { text?: string }) => block.text === 'loader smoke message')).toBe(true)
+  expect(ctx.agents.get(coldId)).toBeUndefined()
+  expect(resume).not.toHaveBeenCalled()
+  const selfResults: string[] = []
+  ctx.get('llm')!.registerAdapter(
+    ['fleet-native-self'],
+    new MockAdapter([
+      toolCallResponse('native-self-search', 'inspect_session', { session_id: 'fleet-native-self-reader', mode: 'search', query: 'only-in-current-tool-needle-72' }),
+      options => {
+        selfResults.push(toolText(options))
+        return textResponse('self search verified')
+      }
+    ])
+  )
+  const selfReader = await ctx.agentLoop.create(SessionId('fleet-native-self-reader'), { provider: 'fleet-native-self', model: 'mock' }, { cwd: workspace.path })
+  selfReader.followup(createUserMessage({ content: [{ type: 'text', text: 'Exercise native search isolation in the current step.' }], source: { kind: 'user' } }))
+  await selfReader.whenIdle()
+  expect(selfResults).toHaveLength(1)
+  expect(JSON.parse(selfResults[0]!)).toMatchObject({ mode: 'search', results: [], hasMore: false })
   await ctx.loader.resolve('fleet').fiber!.dispose()
   expect(ctx.tools.get('send_to_session', scopeOf(caller.ctx))).toBeUndefined()
 })
