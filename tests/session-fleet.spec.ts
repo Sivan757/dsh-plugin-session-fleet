@@ -131,6 +131,50 @@ function expectToolError(result: Awaited<ReturnType<typeof execute>>, fragment: 
 
 const FLEET_TOOLS = ['list_sessions', 'search_sessions', 'inspect_session', 'create_session', 'send_to_session'].sort()
 
+describe('fleet location and list boundaries', () => {
+  it('uses an explicit cwd without inheriting the caller workspace', async () => {
+    const { ctx, lead } = await setup()
+    vi.spyOn(ctx.workspaceRegistry, 'list').mockReturnValueOnce([{ id: 'ws-home', sessionIds: [lead.id] } as never])
+    const stub = ctx.sessionController as unknown as { create: ReturnType<typeof vi.fn> }
+    stub.create.mockImplementationOnce(async (request: { cwd?: string; workspaceId?: string }) => {
+      if (request.cwd !== undefined && request.workspaceId !== undefined) throw new Error('session.create accepts workspaceId or cwd, not both')
+      return { sessionId: 'fleet-explicit' }
+    })
+    const result = await execute(ctx, lead, 'create_session', { cwd: '/explicit-location' })
+    expect(result.isError, text(result)).not.toBe(true)
+    expect(JSON.parse(text(result)).sessionId).toBe('fleet-explicit')
+  })
+
+  it('inherits the caller workspace only when neither location parameter is set', async () => {
+    const { ctx, lead } = await setup()
+    vi.spyOn(ctx.workspaceRegistry, 'list').mockReturnValueOnce([{ id: 'ws-home', sessionIds: [lead.id] } as never])
+    const stub = ctx.sessionController as unknown as { create: ReturnType<typeof vi.fn> }
+    stub.create.mockResolvedValueOnce({ sessionId: 'fleet-inherited' })
+    const result = await execute(ctx, lead, 'create_session', {})
+    expect(result.isError, text(result)).not.toBe(true)
+    expect(stub.create.mock.calls.at(-1)?.[0]).toEqual({ workspaceId: 'ws-home' })
+  })
+
+  it('bounds the default list length by the configured maximum', async () => {
+    const { ctx, lead } = await setup({ maxListRows: 1 })
+    const listed = JSON.parse(text(await execute(ctx, lead, 'list_sessions', {})))
+    expect(listed.sessions).toHaveLength(1)
+    expect(listed.total).toBe(3)
+  })
+
+  it('does not label ordinary sessions outside a cwd filter as hidden subagents', async () => {
+    const { ctx, lead } = await setup()
+    const listed = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { cwd: lead.session.header.cwd })))
+    expect(listed.sessions).toHaveLength(2)
+    expect(listed.hiddenSubagentSessions ?? 0).toBe(0)
+  })
+
+  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid configured row limit %s', maxListRows => {
+    expect(() => fleet.Config({ maxListRows })).toThrow()
+    expect(() => fleet.Config({ maxMessageChars: maxListRows })).toThrow()
+  })
+})
+
 describe('session-fleet tools', () => {
   it('lists visible sessions, filters by cwd, and validates limit bounds', async () => {
     const { ctx, lead, other } = await setup()
