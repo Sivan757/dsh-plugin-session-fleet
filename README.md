@@ -15,10 +15,12 @@ The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conserv
 ## Tools installed per agent
 
 - `list_sessions` lists visible sessions with status, activity, and working directory, and starts none of them. Its default page size is the smaller of 20 and `maxListRows`; `hiddenSubagentSessions` counts only ownership exclusions, independently of a cwd filter.
-- `search_sessions` runs a literal full-text search across visible session messages. Each hit carries its workspace, running state, and last activity, so a hit can be judged without opening it.
+- `search_sessions` searches current user and assistant messages after restricting results to Host-authorized sessions. It accepts `cwd`, ISO 8601 `after`/`before`, `limit`, and `cursor`. Hits include a bounded snippet, matching `seq`, working directory, state, activity, and an existing title hint when available.
 - `inspect_session` reads one session outline without starting it: metadata, message counts, the latest three prompts, and the last reply, all clipped (200 characters per prompt, 300 per reply) with `fullLength` when clipped. It also writes the full transcript to a private temp file (mode 0600, under the OS temp directory) and returns `transcriptPath` and `transcriptLines`. The file is one tab-separated line per event: `seq<TAB>time<TAB>role<TAB>source<TAB>text`, with tool calls kept as name and arguments, so the model greps it for detail instead of pulling content through the context.
 - `create_session` accepts either an explicit `cwd` or an explicit `workspace_id`. Only when both are omitted does it inherit the caller’s workspace, falling back to the caller’s recorded working directory.
 - `send_to_session` delivers a queued or steered message to another session through the DSH session message queue.
+
+Both discovery tools return `hasMore` and an opaque `nextCursor` when more results exist. Pass that value as `cursor` with identical filters and limit. Lists are ordered by activity and reject a cursor if the listing changes; search cursors follow the provider’s generation rules. Restart without a cursor when stale. Titles are optional projection hints, not proof of a session’s current task. Search requires the Host’s `sessionQuery` provider and preserves its tokenizer and page-size limits.
 
 The tools disclose progressively: search or list first, inspect a candidate before messaging it, and grep the transcript file only when the outline is not enough. That order keeps a model from pulling transcripts it does not need.
 

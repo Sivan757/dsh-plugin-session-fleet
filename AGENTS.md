@@ -5,7 +5,7 @@ Instructions for working in this repository. It ships one DeepSeek Harness plugi
 ## Layout
 
 ```
-src/index.ts    the whole plugin: config schema, tool definitions, and the agent-scoped registration
+src/            config schema, tool definitions, discovery helpers, and agent-scoped registration
 tests/          vitest suites; testkit/ holds the mock agent adapter they share
 locale/         en.json and zh.json display metadata for the plugin manager
 cordis.patch.yml  the opt-in bundle row the host applies
