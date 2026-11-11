@@ -2,31 +2,24 @@
 
 ## [0.3.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.2.2...dsh-plugin-session-fleet-v0.3.0) (2026-11-11)
 
+### Upgrade notes
 
-### ⚠ BREAKING CHANGES
-
-* export bounded session transcripts only on request
+- List and search results are paginated. Follow `hasMore` and `nextCursor` to traverse the current authorized scope.
+- Inspection defaults to a compact outline. Set `transcript: true` explicitly to create a bounded private text export.
+- Delivery acceptance confirms queue admission. Keep `messageId` and inspect the target before retrying an unknown persistence result.
 
 ### Features
 
-* export bounded session transcripts only on request ([a8880ce](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/a8880ceb2a5d1f6fb8d36e53c67df6800de0884c))
-* expose native session details through inspect modes ([29a3767](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/29a3767e0aa62f67ac7e9770f3f2bee956eaaf2b))
-* inspect_session outline and workspace-aware search hits ([3bb7ec0](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/3bb7ec0c7ac6c38df2f0257dfe13bac5a0ad29b5))
-* inspect_session writes a grep-able transcript instead of paging messages ([d74ead6](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/d74ead6a9f7e520650b89c06618460e164189978))
-* on-disk full-text session search with CJK bigrams, incremental refresh ([2b4189e](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/2b4189e2ee1f00ec39eb6b4af4bacef945cdbcc8))
-* paginate authorized session discovery and search ([2a14fcc](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/2a14fcc7b06159a2334be215856dd57d713af324))
-* return inspectable delivery persistence receipts ([ffab045](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/ffab045194caab145ccb0ea3e18142e7a2df08a6))
+- Add `inspect_session` as the fifth Fleet tool, with `outline`, native event `search`, and exact-event `read` modes. Return executable detail calls and backend-provided source locations when available.
+- Return complete selected events, including tool results, with bounded neighboring summaries. Inspect stored sessions without activating an Agent.
+- Continue authorized discovery across model tool calls while preserving hidden-subagent and delivery restrictions.
+- Return stable delivery IDs and explicit persistence receipts from the native queue and steer paths.
 
+### Fixes and validation
 
-### Bug Fixes
-
-* honor explicit session locations and list bounds ([7d39a04](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/7d39a040779a6d150aee6c4d85a8dfbf45c73d4d))
-* preserve discovery continuation across model tool calls ([4c5096f](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/4c5096fbccdf95a7415903badfa32ac7de736026))
-
-
-### Documentation
-
-* prepare Session Fleet 0.3.0 upgrade guidance ([2d9bf3f](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/2d9bf3fe7c59ca9bf275c77baa1f473579b25eef))
+- Honor explicit creation locations, bound list sizes, and count ownership exclusions separately from cwd filtering.
+- Retain the Host search provider and tokenizer. This release adds no separate CJK index.
+- Pass 82 tests, including Loader, SQLite, archived-session reads, and actual AgentLoop calls with a test model adapter. Verify the built JavaScript bundle and package contents.
 
 ## [0.2.2](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.2.1...dsh-plugin-session-fleet-v0.2.2) (2026-10-17)
 
