@@ -15,3 +15,6 @@
         transcriptMaxFiles: 20
         transcriptTtlSeconds: 3600
         transcriptChunkChars: 1024
+        searchCursorMaxEntries: 100
+        searchCursorTtlSeconds: 300
+        searchCursorMaxSessions: 10000

@@ -12,7 +12,7 @@ import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import { jsonlPersistencePlugin as JsonlSessionPersistence } from '../testkit/jsonl-persistence.ts'
-import SessionQueryEngine from '@deepseek-ai/dsh-session-query'
+import SessionQueryEngine, { SessionSearchCursor } from '@deepseek-ai/dsh-session-query'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { MockAdapter } from '../testkit/mock-adapter.ts'
@@ -73,12 +73,7 @@ interface Fixture {
  * recorded elsewhere.
  */
 async function setup(config: fleet.Config = {}, script: ConstructorParameters<typeof MockAdapter>[0] = []): Promise<Fixture> {
-  const full = {
-    allowCrossWorkspace: config.allowCrossWorkspace ?? false,
-    maxListRows: config.maxListRows ?? 50,
-    maxMessageChars: config.maxMessageChars ?? 20_000,
-    includeSubagents: config.includeSubagents ?? false
-  }
+  const full = fleet.Config(config)
   const ctx = new Context()
   contexts.add(ctx)
   await mountAgentLoopTestDependencies(ctx)
@@ -223,15 +218,40 @@ describe('fleet discovery continuation', () => {
     expect(result.results).toEqual([])
   })
 
-  it('validates time windows and passes the scope and continuation to the query provider', async () => {
+  it('binds continuation to the caller and request while rechecking authorization per page', async () => {
+    const { ctx, lead, other } = await setup()
+    const sample = await ctx.sessionQuery.searchSessions({ query: 'needle', limit: 1 })
+    const provider = vi.spyOn(ctx.sessionQuery, 'searchSessions').mockResolvedValueOnce({ ...sample, nextCursor: SessionSearchCursor('native-next') })
+    const args = { query: 'needle', cwd: lead.session.header.cwd, limit: 1 }
+    const first = JSON.parse(text(await execute(ctx, lead, 'search_sessions', args)))
+    expect(first.nextCursor).not.toBe('native-next')
+    expect(provider.mock.calls[0]?.[0].cursor).toBeUndefined()
+    expectToolError(await execute(ctx, other, 'search_sessions', { ...args, cursor: first.nextCursor }), 'mismatched')
+    expectToolError(await execute(ctx, lead, 'search_sessions', { ...args, query: 'changed', cursor: first.nextCursor }), 'mismatched')
+    const authorized = await ctx.sessionController.list({}, SIGNAL)
+    vi.spyOn(ctx.sessionController, 'list').mockResolvedValueOnce({ items: authorized.items.filter(row => row.sessionId === lead.id) })
+    expect(JSON.parse(text(await execute(ctx, lead, 'search_sessions', { ...args, cursor: first.nextCursor })))).toEqual({ results: [], hasMore: false })
+    expect(provider).toHaveBeenCalledTimes(1)
+  })
+
+  it('limits IDs remembered by a search traversal before requesting another provider page', async () => {
+    const { ctx, lead } = await setup({ searchCursorMaxSessions: 1 })
+    const sample = await ctx.sessionQuery.searchSessions({ query: 'needle', limit: 1 })
+    const provider = vi.spyOn(ctx.sessionQuery, 'searchSessions').mockResolvedValueOnce({ ...sample, nextCursor: SessionSearchCursor('native-next') })
+    const args = { query: 'needle', cwd: lead.session.header.cwd, limit: 1 }
+    const first = JSON.parse(text(await execute(ctx, lead, 'search_sessions', args)))
+    expectToolError(await execute(ctx, lead, 'search_sessions', { ...args, cursor: first.nextCursor }), 'continuation limit')
+    expect(provider).toHaveBeenCalledTimes(1)
+  })
+
+  it('validates time windows and passes the current scope to the query provider', async () => {
     const { ctx, lead } = await setup()
     const provider = vi.spyOn(ctx.sessionQuery, 'searchSessions')
-    const args = { query: 'needle', cwd: lead.session.header.cwd, after: '2026-01-01T00:00:00Z', before: '2026-12-31T00:00:00Z', limit: 1, cursor: 'provider-cursor' }
+    const args = { query: 'needle', cwd: lead.session.header.cwd, after: '2026-01-01T00:00:00Z', before: '2026-12-31T00:00:00Z', limit: 1 }
     await execute(ctx, lead, 'search_sessions', args)
     expect(provider.mock.calls[0]?.[0]).toMatchObject({
       query: 'needle',
       limit: 1,
-      cursor: 'provider-cursor',
       sessionFilters: [{ kind: 'id', values: ['fleet-lead', 'fleet-other'] }],
       eventFilters: [
         { kind: 'type', values: ['user/message', 'assistant/message'] },

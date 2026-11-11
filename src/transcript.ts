@@ -119,9 +119,15 @@ export class TranscriptStore {
               const code = text.charCodeAt(end - 1)
               if (end < text.length && code >= 0xd800 && code <= 0xdbff) end--
               const line =
-                [event.seq, new Date(event.time).toISOString(), row.role, escapeField(row.source), ++chunk, row.messageId, escapeField(prefix + text.slice(offset, end))].join(
-                  '\t'
-                ) + '\n'
+                [
+                  event.seq,
+                  new Date(event.time).toISOString(),
+                  row.role,
+                  escapeField(row.source),
+                  ++chunk,
+                  escapeField(row.messageId),
+                  escapeField(prefix + text.slice(offset, end))
+                ].join('\t') + '\n'
               const size = Buffer.byteLength(line)
               if (bytes + size > this.limits.maxBytes) {
                 truncated = true
