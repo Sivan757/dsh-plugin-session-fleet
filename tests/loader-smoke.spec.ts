@@ -12,9 +12,9 @@ import * as StorageDomain from '@deepseek-ai/dsh-storage-domain'
 import * as StorageJson from '@deepseek-ai/dsh-storage-json'
 import Typert from '@deepseek-ai/dsh-typert-registry'
 import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
-import SessionQuery from '@deepseek-ai/dsh-session-query'
+import SessionQuery from '@deepseek-ai/dsh-session-query-sqlite'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -24,15 +24,6 @@ import * as yaml from 'js-yaml'
 import { jsonlPersistencePlugin } from '../testkit/jsonl-persistence.ts'
 import { MockAdapter } from '../testkit/mock-adapter.ts'
 import * as fleet from '../src/index.ts'
-
-class ReadableSessions extends SessionQuery {
-  override searchSessions(): Promise<never> {
-    return Promise.reject(new Error('search not used by this smoke'))
-  }
-  override searchEvents(): Promise<never> {
-    return Promise.reject(new Error('event search not used by this smoke'))
-  }
-}
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -53,7 +44,7 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
     async apply(test: Context) {
       await mountAgentLoopTestDependencies(test)
       await test.plugin(jsonlPersistencePlugin, { root: join(root, 'sessions') })
-      await test.plugin(ReadableSessions)
+      await test.plugin(SessionQuery, { path: ':memory:', openAt: 'first-search' })
       await test.plugin(AgentLoop, { agents: [] })
       test.get('llm')!.registerAdapter(['mock'], new MockAdapter([]))
       // Image uploads and GUI receipt transport are outside this text-only test.
@@ -110,6 +101,23 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   expect(inspected.counts.user).toBe(1)
   expect(inspected.recentPrompts[0].source).toBe('session-fleet')
   expect(await readFile(inspected.transcriptPath, 'utf8')).toContain('loader smoke message')
+  const second = await execute('create_session', {})
+  await execute('send_to_session', { session_id: second.sessionId, message: 'loader smoke message' })
+  await ctx.agents.get(SessionId(second.sessionId))!.whenIdle()
+  const child = await ctx.agentLoop.create(SessionId('smoke-child'), { provider: 'mock', model: 'mock', cwd, origin: 'subagent', parentSessionId: caller.id })
+  child.followup(createUserMessage({ content: [{ type: 'text', text: 'loader smoke message' }], source: { kind: 'user' } }))
+  await child.whenIdle()
+  const found = await execute('search_sessions', { query: 'smoke message', cwd: workspace.path, limit: 1 })
+  expect(found.results).toHaveLength(1)
+  expect(found.nextCursor).toBeTypeOf('string')
+  const next = await execute('search_sessions', { query: 'smoke message', cwd: workspace.path, limit: 1, cursor: found.nextCursor })
+  expect(next.results).toHaveLength(1)
+  expect(next.hasMore).toBe(false)
+  expect(new Set([...found.results, ...next.results].map(row => row.sessionId))).toEqual(new Set([inherited.sessionId, second.sessionId]))
+  expect(found.results[0].seq).toBeTypeOf('number')
+  const listed = await execute('list_sessions', { cwd: workspace.path, limit: 1 })
+  const listedAgain = await execute('list_sessions', { cwd: workspace.path, limit: 1, cursor: listed.nextCursor })
+  expect(listedAgain.sessions[0].sessionId).not.toBe(listed.sessions[0].sessionId)
   await ctx.loader.resolve('fleet').fiber!.dispose()
   expect(ctx.tools.get('send_to_session', scopeOf(caller.ctx))).toBeUndefined()
 })

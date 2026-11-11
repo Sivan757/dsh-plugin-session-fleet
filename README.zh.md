@@ -15,10 +15,12 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 ## 每个智能体安装的工具
 
 - `list_sessions`：列出可见会话及状态、活跃时间与工作目录，不会激活任何目标。默认数量取 20 与 `maxListRows` 的较小值；`hiddenSubagentSessions` 只统计所有权隐藏，与 cwd 过滤无关。
-- `search_sessions`：跨可见会话消息的字面量全文搜索。
+- `search_sessions`：先限定 Host 允许访问的会话，再搜索当前用户与助手消息。支持 `cwd`、ISO 8601 时间 `after`/`before`、`limit` 和 `cursor`；命中包含有界片段、事件 `seq`、目录、状态、活跃时间及已有标题提示。
 - `inspect_session`：读取会话概览，返回计数、最近三条输入与最后回复。输入分别截至 200 字符，回复截至 300 字符，并返回可供 grep 的转录文件路径。
 - `create_session`：接受显式 `cwd` 或 `workspace_id`，两者互斥。只有两者都省略时才继承调用者 workspace，找不到时使用调用者记录的工作目录。
 - `send_to_session`：通过 DSH 会话消息队列向其他会话投递排队或 steer 消息。
+
+两个发现工具均返回 `hasMore`，还有结果时提供不透明的 `nextCursor`。保持过滤参数与 limit 不变，将它作为 `cursor` 继续调用。列表按活跃时间排序，列表变化时拒绝旧游标；搜索游标遵循 provider 的代际规则。游标失效时省略它重新查询。标题是可选投影提示，不能据此认定会话的当前任务。搜索依赖宿主 `sessionQuery` provider，并保留其分词与页大小限制。
 
 投递消息携带专用的 `session-fleet` 来源标识与对等输入提示，用于向目标表明这是对等智能体输入。对端需主动调用 `send_to_session` 回复发送者，插件不会自动转发其最终回答。
 

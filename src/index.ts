@@ -4,6 +4,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { sessionListPage } from './discovery.ts'
+import type { SessionSearchCursor, SessionEventMetadataFilter } from '@deepseek-ai/dsh-session-query'
 import z from '@deepseek-ai/schemastery'
 /**
  * Apply a domain brand to a value the domain already admitted.
@@ -32,7 +34,7 @@ import type { SessionSummary } from '@deepseek-ai/dsh-api-session-controller/typ
 /** Cordis plugin name. */
 export const name = 'tool-session-fleet'
 /** Services required by the Session Fleet tool plugin. */
-export const inject = ['agents', 'sessions', 'sessionController', 'workspaceRegistry', 'tools', 'systemPrompt']
+export const inject = ['agents', 'sessions', 'sessionController', 'sessionQuery', 'workspaceRegistry', 'tools', 'systemPrompt']
 
 declare module '@deepseek-ai/dsh-llm' {
   interface MessageSourceMap {
@@ -76,6 +78,7 @@ const SESSION_ROW_SCHEMA = {
     agentAvailable: { type: 'boolean', required: true },
     blank: { type: 'boolean', required: true },
     cwd: { type: 'string' },
+    title: { type: 'string' },
     parentSessionId: { type: 'string' },
     origin: { type: 'string', enum: ['subagent'] }
   }
@@ -87,6 +90,8 @@ const LIST_VALUE_SCHEMA = {
   properties: {
     sessions: { type: 'array', required: true, items: SESSION_ROW_SCHEMA },
     total: { type: 'integer', required: true },
+    hasMore: { type: 'boolean', required: true },
+    nextCursor: { type: 'string' },
     hiddenSubagentSessions: { type: 'integer' }
   }
 } as const
@@ -104,13 +109,16 @@ const SEARCH_VALUE_SCHEMA = {
         properties: {
           sessionId: { type: 'string', required: true },
           snippet: { type: 'string', required: true },
+          seq: { type: 'integer', required: true },
+          title: { type: 'string' },
           cwd: { type: 'string' },
           running: { type: 'boolean' },
           updatedAt: { type: 'string' }
         }
       }
     },
-    hasMore: { type: 'boolean', required: true }
+    hasMore: { type: 'boolean', required: true },
+    nextCursor: { type: 'string' }
   }
 } as const
 
@@ -211,6 +219,7 @@ function fleetRow(summary: SessionSummary): InferValue<typeof SESSION_ROW_SCHEMA
     running: summary.running,
     agentAvailable: summary.agentAvailable,
     blank: summary.blank,
+    ...(typeof summary.projections?.values.title === 'string' ? { title: summary.projections.values.title } : {}),
     ...(summary.cwd === undefined ? {} : { cwd: summary.cwd }),
     ...(summary.parentSessionId === undefined ? {} : { parentSessionId: summary.parentSessionId }),
     ...(summary.origin === undefined ? {} : { origin: summary.origin })
@@ -304,7 +313,8 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
           description: 'List DSH sessions visible to the Host with status, activity time, and working directory, without starting any of them.',
           parameters: {
             limit: { type: 'integer', description: `Maximum rows to return, 1 through ${config.maxListRows}. Defaults to ${Math.min(20, config.maxListRows)}.` },
-            cwd: { type: 'string', description: 'Only sessions whose recorded working directory starts with this absolute path.' }
+            cwd: { type: 'string', description: 'Only sessions whose recorded working directory starts with this absolute path.' },
+            cursor: { type: 'string', description: 'Opaque nextCursor from the same list, cwd, and limit. Restart without it if the listing changes.' }
           },
           output: jsonOutput(LIST_VALUE_SCHEMA),
           async execute(args, exec) {
@@ -316,11 +326,16 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
               const { items } = await ctx.sessionController.list({}, exec.signal)
               const visible = config.includeSubagents ? items : items.filter(row => row.origin !== 'subagent')
               const prefix = args.cwd
-              const filtered = prefix === undefined ? visible : visible.filter(row => row.cwd?.startsWith(prefix))
+              const filtered = visible
+                .filter(row => prefix === undefined || row.cwd?.startsWith(prefix))
+                .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
               const limit = args.limit ?? Math.min(20, config.maxListRows)
+              const page = sessionListPage(filtered, limit, prefix, args.cursor)
               return {
-                sessions: filtered.slice(0, limit).map(fleetRow),
+                sessions: page.rows.map(fleetRow),
                 total: filtered.length,
+                hasMore: page.hasMore,
+                ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
                 ...(items.length === visible.length ? {} : { hiddenSubagentSessions: items.length - visible.length })
               }
             } catch (error: unknown) {
@@ -336,34 +351,78 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
         defineTool({
           name: 'search_sessions',
           description:
-            'Find sessions by message text. Returns one hit per session with a snippet, workspace, running state, and last activity. Use inspect_session on a hit before messaging it.',
+            'Search current messages in Host-visible sessions, with bounded excerpts and matching event seqs. Reuse nextCursor with identical query and filters to continue. Inspect a candidate before messaging it.',
           parameters: {
-            query: { type: 'string', required: true, description: 'Literal message-content query.' }
+            query: { type: 'string', required: true, description: 'Literal message-content query, up to 500 UTF-16 code units.' },
+            limit: {
+              type: 'integer',
+              description: `Maximum hits, 1 through ${config.maxListRows}. Defaults to ${Math.min(20, config.maxListRows)}; the search provider may impose a smaller maximum.`
+            },
+            cwd: { type: 'string', description: 'Only sessions whose recorded cwd starts with this path.' },
+            after: { type: 'string', description: 'Only matching messages at or after this ISO 8601 timestamp.' },
+            before: { type: 'string', description: 'Only matching messages at or before this ISO 8601 timestamp.' },
+            cursor: { type: 'string', description: 'Opaque nextCursor from the identical query, cwd, time filters, and limit. Restart without it if stale.' }
           },
           output: jsonOutput(SEARCH_VALUE_SCHEMA),
           async execute(args, exec) {
             callingAgent(exec.agent, 'search_sessions')
             try {
-              const [{ items, hasMore }, summaries] = await Promise.all([
-                ctx.sessionController.search({ query: args.query }, exec.signal),
-                ctx.sessionController.list({}, exec.signal)
-              ])
-              const rows = new Map(summaries.items.map(row => [row.sessionId, row]))
-              const results = items.flatMap(item => {
-                const row = rows.get(item.sessionId)
-                // A hit whose summary vanished between calls is dropped rather than reported without context.
-                if (row === undefined || (!config.includeSubagents && row.origin === 'subagent')) return []
+              if (!positiveInt(args.limit, config.maxListRows)) throw new Error(`limit must be an integer from 1 through ${config.maxListRows}`)
+              const query = args.query.trim()
+              if (query.length === 0 || query.length > 500) throw new Error('query must contain 1 through 500 UTF-16 code units')
+              const time = (value: string | undefined) => {
+                if (value === undefined) return undefined
+                const parsed = Date.parse(value)
+                if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}T/.test(value) || !Number.isFinite(parsed)) throw new Error('after and before must be ISO 8601 timestamps')
+                return parsed
+              }
+              const from = time(args.after)
+              const to = time(args.before)
+              if (from !== undefined && to !== undefined && from > to) throw new Error('after must not be later than before')
+              const summaries = await ctx.sessionController.list({}, exec.signal)
+              const rows = new Map(
+                summaries.items
+                  .filter(row => (config.includeSubagents || row.origin !== 'subagent') && (args.cwd === undefined || row.cwd?.startsWith(args.cwd)))
+                  .map(row => [row.sessionId, row])
+              )
+              if (rows.size === 0) return { results: [], hasMore: false }
+              const eventFilters: SessionEventMetadataFilter[] = [
+                { kind: 'type', values: ['user/message', 'assistant/message'] },
+                { kind: 'surface', values: ['current'] }
+              ]
+              if (from !== undefined || to !== undefined) eventFilters.push({ kind: 'time', ...(from === undefined ? {} : { from }), ...(to === undefined ? {} : { to }) })
+              const page = await ctx.sessionQuery.searchSessions(
+                {
+                  query,
+                  sessionFilters: [{ kind: 'id', values: [...rows.keys()].sort() }],
+                  eventFilters,
+                  limit: args.limit ?? Math.min(20, config.maxListRows),
+                  ...(args.cursor === undefined ? {} : { cursor: asBrand<SessionSearchCursor>(args.cursor) })
+                },
+                { signal: exec.signal }
+              )
+              const results = page.items.flatMap(hit => {
+                const row = rows.get(hit.header.id)
+                if (
+                  row === undefined ||
+                  hit.bestMatch.sessionId !== row.sessionId ||
+                  hit.bestMatch.surface !== 'current' ||
+                  (hit.bestMatch.type !== 'user/message' && hit.bestMatch.type !== 'assistant/message')
+                )
+                  return []
                 return [
                   {
-                    sessionId: item.sessionId,
-                    snippet: item.snippet,
+                    sessionId: row.sessionId,
+                    snippet: Array.from(hit.bestMatch.snippet).slice(0, 240).join(''),
+                    seq: hit.bestMatch.seq,
                     running: row.running,
                     updatedAt: new Date(row.updatedAt).toISOString(),
-                    ...(row.cwd === undefined ? {} : { cwd: row.cwd })
+                    ...(row.cwd === undefined ? {} : { cwd: row.cwd }),
+                    ...(typeof row.projections?.values.title === 'string' ? { title: row.projections.values.title } : {})
                   }
                 ]
               })
-              return { results, hasMore }
+              return { results, hasMore: page.nextCursor !== undefined, ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }) }
             } catch (error: unknown) {
               throw new Error(errorText(error))
             }
