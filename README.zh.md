@@ -54,3 +54,5 @@ pnpm run build            # 类型声明与打包入口
 ```
 
 需要 Node.js 22 或更高版本。
+
+行为测试使用真实 agent 与 JSONL 持久化。YAML Loader 组合验证还运行真实 Session Controller、workspace registry 和 JSON 存储，覆盖创建、队列投递、检查与卸载。模型适配器及未使用的图片、GUI 传输为测试替身。

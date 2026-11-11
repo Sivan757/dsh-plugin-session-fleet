@@ -56,3 +56,5 @@ pnpm run build            # declarations plus the bundled entry
 ```
 
 Requires Node.js 22 or later.
+
+The behavior suite uses real agents with JSONL persistence. A YAML Loader smoke also runs the real Session Controller, workspace registry, JSON storage, queue delivery, inspection, and disposal. The model adapter and unused image/GUI transport are test doubles.
