@@ -15,9 +15,12 @@ The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conserv
 ## Tools installed per agent
 
 - `list_sessions` lists visible sessions with status, activity, and working directory, and starts none of them.
-- `search_sessions` runs a literal full-text search across visible session messages.
+- `search_sessions` runs a literal full-text search across visible session messages. Each hit carries its workspace, running state, and last activity, so a hit can be judged without opening it.
+- `inspect_session` reads one session outline without starting it: metadata, message counts, the latest three prompts, and the last reply. Pass `messages` to page through recent messages. Text is clipped (200 characters per prompt, 300 per reply, 400 per paged message) and reports `fullLength` when clipped.
 - `create_session` creates a session in a given cwd or workspace.
 - `send_to_session` delivers a queued or steered message to another session through the DSH session message queue.
+
+The tools disclose progressively: search or list first, inspect a candidate before messaging it, and page messages only when the outline is not enough. That order keeps a model from pulling transcripts it does not need.
 
 A delivery carries the dedicated `session-fleet` message source and a peer-agent framing note, so a target never mistakes fleet input for user input. Replies travel back through the same channel.
 

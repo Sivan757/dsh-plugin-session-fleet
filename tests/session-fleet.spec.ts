@@ -8,7 +8,7 @@ import { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
-import { ToolCallId } from '@deepseek-ai/dsh-llm'
+import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { jsonlPersistencePlugin as JsonlSessionPersistence } from '../testkit/jsonl-persistence.ts'
@@ -129,7 +129,7 @@ function expectToolError(result: Awaited<ReturnType<typeof execute>>, fragment: 
   expect(text(result)).toContain(fragment)
 }
 
-const FLEET_TOOLS = ['list_sessions', 'search_sessions', 'create_session', 'send_to_session'].sort()
+const FLEET_TOOLS = ['list_sessions', 'search_sessions', 'inspect_session', 'create_session', 'send_to_session'].sort()
 
 describe('session-fleet tools', () => {
   it('lists visible sessions, filters by cwd, and validates limit bounds', async () => {
@@ -153,14 +153,64 @@ describe('session-fleet tools', () => {
     expect(other.status).toBe('idle')
   })
 
-  it('searches sessions through the controller and surfaces hasMore', async () => {
+  it('searches sessions through the controller and surfaces workspace context', async () => {
     const { ctx, lead } = await setup()
     const found = JSON.parse(text(await execute(ctx, lead, 'search_sessions', { query: 'needle' }))) as {
-      results: Array<{ sessionId: string; snippet: string }>
+      results: Array<{ sessionId: string; snippet: string; running: boolean; updatedAt: string; cwd?: string }>
       hasMore: boolean
     }
-    expect(found.results).toEqual([{ sessionId: 'fleet-lead', snippet: 'needle match' }])
+    expect(found.results).toHaveLength(1)
+    expect(found.results[0]).toMatchObject({ sessionId: 'fleet-lead', snippet: 'needle match', running: false })
+    expect(typeof found.results[0]!.updatedAt).toBe('string')
     expect(found.hasMore).toBe(false)
+  })
+
+  it('inspects one session outline without asking for messages', async () => {
+    const { ctx, lead, other } = await setup()
+    other.followup(createUserMessage({ content: [{ type: 'text', text: 'first line' }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    other.followup(createUserMessage({ content: [{ type: 'text', text: 'second line' }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const outline = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-other' }))) as {
+      counts: { user: number; assistant: number; toolCalls: number }
+      recentPrompts: Array<{ text: string; role: string }>
+      running: boolean
+      agentAvailable: boolean
+      cwd?: string
+      eventCount: number
+      messages?: unknown
+    }
+    expect(outline.counts.user).toBe(2)
+    expect(outline.recentPrompts.map(row => row.text)).toEqual(['first line', 'second line'])
+    expect(outline.running).toBe(false)
+    expect(outline.agentAvailable).toBe(true)
+    expect(outline.cwd).toBe(other.session.header.cwd)
+    expect(outline.eventCount).toBeGreaterThan(0)
+    expect(outline.messages).toBeUndefined()
+  })
+
+  it('pages recent messages only when asked and clips long text', async () => {
+    const { ctx, lead, other } = await setup()
+    other.followup(createUserMessage({ content: [{ type: 'text', text: 'x'.repeat(500) }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const detail = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-other', messages: 1 }))) as {
+      messages: Array<{ role: string; text: string; truncated?: boolean; fullLength?: number }>
+    }
+    expect(detail.messages).toHaveLength(1)
+    expect(detail.messages[0]).toMatchObject({ role: 'user', truncated: true, fullLength: 500 })
+    expect(detail.messages[0]!.text).toHaveLength(400)
+    expectToolError(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-other', messages: 0 }), 'messages must be an integer from 1 through 20')
+  })
+
+  it('refuses subagent sessions in inspect by default', async () => {
+    const { ctx, lead } = await setup()
+    const stub = ctx.sessionController as unknown as { inspect: ReturnType<typeof vi.fn> }
+    stub.inspect.mockResolvedValueOnce({
+      meta: { version: 3, id: SessionId('fleet-child'), createdAt: 0, isSeeded: false, cwd: '/tmp', origin: 'subagent' },
+      inheritedEventCount: 0,
+      events: []
+    })
+    expectToolError(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-child' }), 'subagent session owned by its parent')
   })
 
   it('creates sessions with the caller cwd or an explicit cwd, rejecting conflicts', async () => {
