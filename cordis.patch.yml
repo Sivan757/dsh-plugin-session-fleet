@@ -11,3 +11,7 @@
         maxListRows: 50
         maxMessageChars: 20000
         includeSubagents: false
+        transcriptMaxBytes: 8388608
+        transcriptMaxFiles: 20
+        transcriptTtlSeconds: 3600
+        transcriptChunkChars: 1024

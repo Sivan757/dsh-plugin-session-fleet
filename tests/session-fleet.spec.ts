@@ -246,6 +246,13 @@ describe('fleet discovery continuation', () => {
 })
 
 describe('session-fleet tools', () => {
+  it('returns an outline without creating a transcript unless requested', async () => {
+    const { ctx, lead, other } = await setup()
+    const outline = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id })))
+    expect(outline.transcriptPath).toBeUndefined()
+    expect(outline.asOfSeq).toBeTypeOf('number')
+    expect(outline.omittedEventTypes).toBeInstanceOf(Array)
+  })
   it('lists visible sessions, filters by cwd, and validates limit bounds', async () => {
     const { ctx, lead, other } = await setup()
     const listed = JSON.parse(text(await execute(ctx, lead, 'list_sessions', {}))) as {
@@ -285,7 +292,7 @@ describe('session-fleet tools', () => {
     await other.whenIdle()
     other.followup(createUserMessage({ content: [{ type: 'text', text: 'second line' }], source: { kind: 'user' } }))
     await other.whenIdle()
-    const outline = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-other' }))) as {
+    const outline = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-other', transcript: true }))) as {
       counts: { user: number; assistant: number; toolCalls: number }
       recentPrompts: Array<{ text: string; role: string }>
       running: boolean
@@ -313,7 +320,7 @@ describe('session-fleet tools', () => {
     const long = 'x'.repeat(500)
     other.followup(createUserMessage({ content: [{ type: 'text', text: long }], source: { kind: 'user' } }))
     await other.whenIdle()
-    const outline = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-other' }))) as {
+    const outline = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-other', transcript: true }))) as {
       recentPrompts: Array<{ text: string; truncated?: boolean; fullLength?: number }>
       transcriptPath: string
     }

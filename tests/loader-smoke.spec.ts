@@ -96,7 +96,7 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   expect(workspace.sessionIds).toContain(inherited.sessionId)
   await execute('send_to_session', { session_id: inherited.sessionId, message: 'loader smoke message' })
   await ctx.agents.get(SessionId(inherited.sessionId))!.whenIdle()
-  const inspected = await execute('inspect_session', { session_id: inherited.sessionId })
+  const inspected = await execute('inspect_session', { session_id: inherited.sessionId, transcript: true })
   cleanups.push(() => rm(inspected.transcriptPath, { force: true }))
   expect(inspected.counts.user).toBe(1)
   expect(inspected.recentPrompts[0].source).toBe('session-fleet')
