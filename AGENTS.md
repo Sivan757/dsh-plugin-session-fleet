@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Instructions for working in this repository. It ships one DeepSeek Harness plugin: four model-facing tools that let one agent list and search other sessions, create a session, and message a session.
+Instructions for working in this repository. It ships one DeepSeek Harness plugin: five model-facing tools that let one agent discover and inspect other sessions, create a session, and message a session.
 
 ## Layout
 

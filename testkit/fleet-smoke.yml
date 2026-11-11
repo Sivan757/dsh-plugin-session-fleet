@@ -1,0 +1,27 @@
+- id: runtime
+  name: cordis:runtime
+- id: storage
+  name: cordis:storage
+- id: json
+  name: cordis:json
+- id: domain
+  name: cordis:domain
+  config:
+    backend: json
+- id: workspace
+  name: cordis:workspace
+- id: typert
+  name: cordis:typert
+- id: access
+  name: cordis:access
+- id: filesystem
+  name: cordis:filesystem
+- id: default-model
+  name: cordis:default-model
+  config:
+    provider: mock
+    model: mock
+- id: controller
+  name: cordis:controller
+- id: fleet
+  name: cordis:fleet
