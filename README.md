@@ -20,7 +20,7 @@ The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conserv
 - `create_session` accepts either an explicit `cwd` or an explicit `workspace_id`. Only when both are omitted does it inherit the caller’s workspace, falling back to the caller’s recorded working directory.
 - `send_to_session` delivers peer input through the DSH queue and returns a stable `messageId`, `accepted`, `persistence` (`acknowledged` or `unknown`), and `retrySafe: false`. Acceptance does not mean completion. A missing or failed flush acknowledgement produces an unknown receipt with an inspection warning, because the message may already have arrived. An enqueue exception likewise reports its message ID and an unknown outcome.
 
-Both discovery tools return `hasMore` and an opaque `nextCursor` when more results exist. Pass that value as `cursor` with identical filters and limit. Lists are ordered by activity and reject a cursor if the listing changes; search cursors follow the provider’s generation rules. Restart without a cursor when stale. Titles are optional projection hints, not proof of a session’s current task. Search requires the Host’s `sessionQuery` provider and preserves its tokenizer and page-size limits.
+Both discovery tools return `hasMore` and an opaque `nextCursor` when more results exist. Pass it as `cursor` with identical filters and limit. Lists are ordered by activity and reject a cursor if the listing changes. Search is a live traversal: every page resolves Host authorization again and excludes already returned session IDs. New matches may appear; this is not one frozen corpus snapshot. Search handles expire, may be evicted by capacity or unload, and remember at most `searchCursorMaxSessions` IDs. Narrow cwd or time filters if that bound is reached. Titles are optional projection hints. Search preserves the Host provider’s tokenizer and page-size limits.
 
 The tools disclose progressively: search or list first, inspect a candidate before messaging it, and request `inspect_session` with `transcript: true` only when the outline is not enough. That order keeps a model from pulling transcripts it does not need.
 
@@ -34,16 +34,19 @@ The plugin declares the host support window `>=0.2.0-rc.2 <0.3.0-0`. This is an 
 
 ## Configuration
 
-| Key                    | Default   | Meaning                                                                                  |
-| ---------------------- | --------- | ---------------------------------------------------------------------------------------- |
-| `allowCrossWorkspace`  | `false`   | Permit sending to a session recorded under a different working directory.                |
-| `maxListRows`          | `50`      | Upper bound of one list or search response.                                              |
-| `maxMessageChars`      | `20000`   | Upper bound of one `send_to_session` body.                                               |
-| `includeSubagents`     | `false`   | Show subagent-owned sessions in list, search, and inspect. Delivery stays refused.       |
-| `transcriptMaxBytes`   | `8388608` | Maximum UTF-8 bytes per export, including complete row metadata.                         |
-| `transcriptMaxFiles`   | `20`      | Maximum retained files per mounted plugin; older exports may be evicted.                 |
-| `transcriptTtlSeconds` | `3600`    | File lifetime in seconds, from 1 through 2147483; unload or capacity may reclaim sooner. |
-| `transcriptChunkChars` | `1024`    | Text chunk bound in UTF-16 units, from 64 through 65536, before escaping.                |
+| Key                       | Default   | Meaning                                                                                  |
+| ------------------------- | --------- | ---------------------------------------------------------------------------------------- |
+| `allowCrossWorkspace`     | `false`   | Permit sending to a session recorded under a different working directory.                |
+| `maxListRows`             | `50`      | Upper bound of one list or search response.                                              |
+| `maxMessageChars`         | `20000`   | Upper bound of one `send_to_session` body.                                               |
+| `includeSubagents`        | `false`   | Show subagent-owned sessions in list, search, and inspect. Delivery stays refused.       |
+| `transcriptMaxBytes`      | `8388608` | Maximum UTF-8 bytes per export, including complete row metadata.                         |
+| `transcriptMaxFiles`      | `20`      | Maximum retained files per mounted plugin; older exports may be evicted.                 |
+| `transcriptTtlSeconds`    | `3600`    | File lifetime in seconds, from 1 through 2147483; unload or capacity may reclaim sooner. |
+| `transcriptChunkChars`    | `1024`    | Text chunk bound in UTF-16 units, from 64 through 65536, before escaping.                |
+| `searchCursorMaxEntries`  | `100`     | Maximum retained search continuation handles, with lazy expiry cleanup.                  |
+| `searchCursorTtlSeconds`  | `300`     | Handle lifetime in seconds; capacity or unload may reclaim it sooner.                    |
+| `searchCursorMaxSessions` | `10000`   | Maximum emitted session IDs remembered per traversal; narrow filters at this bound.      |
 
 ## Safety model
 
@@ -55,6 +58,12 @@ The plugin declares the host support window `>=0.2.0-rc.2 <0.3.0-0`. This is an 
 Transcript files use mode 0600 inside a plugin-owned private temp directory. Each TSV row contains `seq`, ISO time, role, source, chunk number, message ID (empty for tool calls), and escaped text. Long events span several rows; backslash, CR, LF, and tab are escaped. Message text and tool-call arguments are included; images, tool results, and other event types are omitted. The byte cap includes complete row metadata. Exports expire by TTL and may be evicted sooner by capacity or plugin unload; stale paths require a new export. Cancellation and unload settle active export I/O before removing the owned directory. The Host still supplies a complete event snapshot, so cold-read decoding is not eliminated.
 
 Before retrying an uncertain send, inspect the target and match `messageId` in the recent input rows or explicitly export and grep its transcript. Repeated calls create new messages; Fleet provides no retry deduplication, automatic ACK, or completion receipt. A peer must explicitly reply to the source session.
+
+Peer input previews omit Fleet’s own framing note while preserving `source`, `senderSessionId`, and `messageId`; exported files retain the note.
+
+## Known limitations and retrieval integration
+
+Host search keeps its provider’s word/phrase tokenizer. Two-character Chinese substring recall is not guaranteed. [Sessiongraph](https://github.com/CC19990113/dsh-plugin-sessiongraph) is a separate history index with CJK bigrams. Its 0.3.3 public search interface supports time and entry-kind filters, but uses `offset` and accepts one session ID rather than an authorized ID set; it has no explicit current-surface filter or authorized ID-set input. This bundle does not install or mount Sessiongraph. Fleet therefore retains Host search rather than silently changing search semantics or building another index. Integration needs explicit history-search semantics, bounded authorization filtering, and index-generation/freshness handling.
 
 ## Development
 

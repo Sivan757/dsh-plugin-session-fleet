@@ -22,7 +22,7 @@ import { join } from 'node:path'
 import { afterEach, expect, it } from 'vitest'
 import * as yaml from 'js-yaml'
 import { jsonlPersistencePlugin } from '../testkit/jsonl-persistence.ts'
-import { MockAdapter } from '../testkit/mock-adapter.ts'
+import { MockAdapter, textResponse, toolCallResponse } from '../testkit/mock-adapter.ts'
 import * as fleet from '../src/index.ts'
 
 const cleanups: Array<() => Promise<void>> = []
@@ -100,6 +100,8 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   cleanups.push(() => rm(inspected.transcriptPath, { force: true }))
   expect(inspected.counts.user).toBe(1)
   expect(inspected.recentPrompts[0].source).toBe('session-fleet')
+  expect(inspected.recentPrompts[0].senderSessionId).toBe(caller.id)
+  expect(inspected.recentPrompts[0].text).toContain('loader smoke message')
   expect(await readFile(inspected.transcriptPath, 'utf8')).toContain('loader smoke message')
   const second = await execute('create_session', {})
   await execute('send_to_session', { session_id: second.sessionId, message: 'loader smoke message' })
@@ -118,6 +120,29 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   const listed = await execute('list_sessions', { cwd: workspace.path, limit: 1 })
   const listedAgain = await execute('list_sessions', { cwd: workspace.path, limit: 1, cursor: listed.nextCursor })
   expect(listedAgain.sessions[0].sessionId).not.toBe(listed.sessions[0].sessionId)
+  const actualPages: string[] = []
+  const request = { query: 'smoke message', cwd: workspace.path, limit: 1 }
+  const toolText = (options: import('@deepseek-ai/dsh-llm').GenerateOptions) =>
+    options.messages
+      .findLast(message => message.role === 'tool')!
+      .content.flatMap(block => (block.type === 'text' ? [block.text] : []))
+      .join('')
+  const continueSearch = (options: import('@deepseek-ai/dsh-llm').GenerateOptions) => {
+    const text = toolText(options)
+    actualPages.push(text)
+    const page = JSON.parse(text)
+    return page.hasMore ? toolCallResponse('page-' + actualPages.length, 'search_sessions', { ...request, cursor: page.nextCursor }) : textResponse('finished')
+  }
+  ctx.get('llm')!.registerAdapter(['fleet-paging'], new MockAdapter([toolCallResponse('page-one', 'search_sessions', request), ...Array.from({ length: 6 }, () => continueSearch)]))
+  const pager = await ctx.agentLoop.create(SessionId('fleet-real-tool-pager'), { provider: 'fleet-paging', model: 'mock' }, { cwd: workspace.path })
+  pager.followup(createUserMessage({ content: [{ type: 'text', text: 'exercise discovery continuation' }], source: { kind: 'user' } }))
+  await pager.whenIdle()
+  expect(actualPages.length).toBeGreaterThanOrEqual(2)
+  const paged = actualPages.map(text => JSON.parse(text))
+  const ids = paged.flatMap(page => page.results.map((row: { sessionId: string }) => row.sessionId))
+  expect(new Set(ids).size).toBe(ids.length)
+  expect(ids).toEqual(expect.arrayContaining([inherited.sessionId, second.sessionId]))
+  expect(paged.at(-1).hasMore).toBe(false)
   await ctx.loader.resolve('fleet').fiber!.dispose()
   expect(ctx.tools.get('send_to_session', scopeOf(caller.ctx))).toBeUndefined()
 })
