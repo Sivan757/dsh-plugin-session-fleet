@@ -56,8 +56,8 @@ export interface Config {
 /** Loader schema for the Session Fleet tool plugin. */
 export const Config: z<Config> = z.object({
   allowCrossWorkspace: z.boolean().default(false),
-  maxListRows: z.number().default(50),
-  maxMessageChars: z.number().default(20_000),
+  maxListRows: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(50),
+  maxMessageChars: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(20_000),
   includeSubagents: z.boolean().default(false)
 })
 
@@ -303,7 +303,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
           name: 'list_sessions',
           description: 'List DSH sessions visible to the Host with status, activity time, and working directory, without starting any of them.',
           parameters: {
-            limit: { type: 'integer', description: `Maximum rows to return, 1 through ${config.maxListRows}. Defaults to 20.` },
+            limit: { type: 'integer', description: `Maximum rows to return, 1 through ${config.maxListRows}. Defaults to ${Math.min(20, config.maxListRows)}.` },
             cwd: { type: 'string', description: 'Only sessions whose recorded working directory starts with this absolute path.' }
           },
           output: jsonOutput(LIST_VALUE_SCHEMA),
@@ -317,11 +317,11 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
               const visible = config.includeSubagents ? items : items.filter(row => row.origin !== 'subagent')
               const prefix = args.cwd
               const filtered = prefix === undefined ? visible : visible.filter(row => row.cwd?.startsWith(prefix))
-              const limit = args.limit ?? 20
+              const limit = args.limit ?? Math.min(20, config.maxListRows)
               return {
                 sessions: filtered.slice(0, limit).map(fleetRow),
                 total: filtered.length,
-                ...(items.length === filtered.length ? {} : { hiddenSubagentSessions: items.length - filtered.length })
+                ...(items.length === visible.length ? {} : { hiddenSubagentSessions: items.length - visible.length })
               }
             } catch (error: unknown) {
               throw new Error(errorText(error))
@@ -438,7 +438,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
       scoped.tools.register(
         defineTool({
           name: 'create_session',
-          description: "Create one new DSH session and return its id. If workspace_id is omitted, the session is automatically added to this session's workspace.",
+          description: "Create one new DSH session and return its id. With neither cwd nor workspace_id, use this session's workspace or working directory.",
           parameters: {
             cwd: { type: 'string', description: 'Absolute working directory for the new session.' },
             workspace_id: { type: 'string', description: 'Existing workspace to attach the new session to.' }
@@ -450,8 +450,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>): () => vo
               throw new Error('create_session accepts cwd or workspace_id, not both')
             }
             let workspaceId = args.workspace_id
-            // Auto-resolve workspace from caller's session if not specified
-            if (workspaceId === undefined) {
+            if (workspaceId === undefined && args.cwd === undefined) {
               const workspaces = ctx.workspaceRegistry.list()
               const callerWs = workspaces.find(w => w.sessionIds.includes(caller.id))
               if (callerWs !== undefined) {
