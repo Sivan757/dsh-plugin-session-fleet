@@ -1,7 +1,7 @@
 /** Fleet tool behavior over real agents, scripted controller stubs, and the executor contract. */
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
@@ -165,7 +165,7 @@ describe('session-fleet tools', () => {
     expect(found.hasMore).toBe(false)
   })
 
-  it('inspects one session outline without asking for messages', async () => {
+  it('inspects one session outline and writes a grep-able transcript', async () => {
     const { ctx, lead, other } = await setup()
     other.followup(createUserMessage({ content: [{ type: 'text', text: 'first line' }], source: { kind: 'user' } }))
     await other.whenIdle()
@@ -178,7 +178,8 @@ describe('session-fleet tools', () => {
       agentAvailable: boolean
       cwd?: string
       eventCount: number
-      messages?: unknown
+      transcriptPath: string
+      transcriptLines: number
     }
     expect(outline.counts.user).toBe(2)
     expect(outline.recentPrompts.map(row => row.text)).toEqual(['first line', 'second line'])
@@ -186,20 +187,25 @@ describe('session-fleet tools', () => {
     expect(outline.agentAvailable).toBe(true)
     expect(outline.cwd).toBe(other.session.header.cwd)
     expect(outline.eventCount).toBeGreaterThan(0)
-    expect(outline.messages).toBeUndefined()
+    expect(outline.transcriptLines).toBeGreaterThanOrEqual(2)
+    const transcript = readFileSync(outline.transcriptPath, 'utf8')
+    expect(transcript).toContain('first line')
+    expect(transcript).toContain('second line')
+    expect(transcript.split('\n')[0]).toMatch(/^\d+\t\S+\tuser\tuser\t/)
   })
 
-  it('pages recent messages only when asked and clips long text', async () => {
+  it('keeps the transcript unclipped while the outline clips long prompts', async () => {
     const { ctx, lead, other } = await setup()
-    other.followup(createUserMessage({ content: [{ type: 'text', text: 'x'.repeat(500) }], source: { kind: 'user' } }))
+    const long = 'x'.repeat(500)
+    other.followup(createUserMessage({ content: [{ type: 'text', text: long }], source: { kind: 'user' } }))
     await other.whenIdle()
-    const detail = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-other', messages: 1 }))) as {
-      messages: Array<{ role: string; text: string; truncated?: boolean; fullLength?: number }>
+    const outline = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-other' }))) as {
+      recentPrompts: Array<{ text: string; truncated?: boolean; fullLength?: number }>
+      transcriptPath: string
     }
-    expect(detail.messages).toHaveLength(1)
-    expect(detail.messages[0]).toMatchObject({ role: 'user', truncated: true, fullLength: 500 })
-    expect(detail.messages[0]!.text).toHaveLength(400)
-    expectToolError(await execute(ctx, lead, 'inspect_session', { session_id: 'fleet-other', messages: 0 }), 'messages must be an integer from 1 through 20')
+    expect(outline.recentPrompts[0]).toMatchObject({ truncated: true, fullLength: 500 })
+    expect(outline.recentPrompts[0]!.text).toHaveLength(200)
+    expect(readFileSync(outline.transcriptPath, 'utf8')).toContain(long)
   })
 
   it('refuses subagent sessions in inspect by default', async () => {
