@@ -20,12 +20,12 @@ function escapeField(text: string): string {
   return text.replaceAll('\\', '\\\\').replaceAll('\r', '\\r').replaceAll('\n', '\\n').replaceAll('\t', '\\t')
 }
 
-function partsOf(event: SessionEvent): { role: string; source: string; parts: string[] } | undefined {
-  if (event.type === 'tool/call') return { role: 'tool', source: event.data.name, parts: [event.data.arguments] }
+function partsOf(event: SessionEvent): { role: string; source: string; messageId: string; parts: string[] } | undefined {
+  if (event.type === 'tool/call') return { role: 'tool', source: event.data.name, messageId: '', parts: [event.data.arguments] }
   if (event.type === 'user/message')
-    return { role: 'user', source: event.data.source.kind, parts: event.data.content.flatMap(block => (block.type === 'text' ? [block.text] : [])) }
+    return { role: 'user', source: event.data.source.kind, messageId: event.data.id, parts: event.data.content.flatMap(block => (block.type === 'text' ? [block.text] : [])) }
   if (event.type === 'assistant/message')
-    return { role: 'assistant', source: 'model', parts: event.data.message.content.flatMap(block => (block.type === 'text' ? [block.text] : [])) }
+    return { role: 'assistant', source: 'model', messageId: event.data.message.id, parts: event.data.message.content.flatMap(block => (block.type === 'text' ? [block.text] : [])) }
   return undefined
 }
 
@@ -119,7 +119,9 @@ export class TranscriptStore {
               const code = text.charCodeAt(end - 1)
               if (end < text.length && code >= 0xd800 && code <= 0xdbff) end--
               const line =
-                [event.seq, new Date(event.time).toISOString(), row.role, escapeField(row.source), ++chunk, escapeField(prefix + text.slice(offset, end))].join('\t') + '\n'
+                [event.seq, new Date(event.time).toISOString(), row.role, escapeField(row.source), ++chunk, row.messageId, escapeField(prefix + text.slice(offset, end))].join(
+                  '\t'
+                ) + '\n'
               const size = Buffer.byteLength(line)
               if (bytes + size > this.limits.maxBytes) {
                 truncated = true

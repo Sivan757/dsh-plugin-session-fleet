@@ -360,8 +360,8 @@ describe('session-fleet tools', () => {
           message: 'please review the diff'
         })
       )
-    ) as { sessionId: string; delivery: string; accepted: boolean }
-    expect(sent).toEqual({ sessionId: 'fleet-other', delivery: 'queue', accepted: true })
+    ) as { sessionId: string; delivery: string; accepted: boolean; messageId: string }
+    expect(sent).toEqual({ sessionId: 'fleet-other', delivery: 'queue', accepted: true, messageId: expect.any(String), persistence: 'acknowledged', retrySafe: false })
     expect(other.status).toBe('idle')
 
     await other.whenIdle()
@@ -369,6 +369,7 @@ describe('session-fleet tools', () => {
       .snapshotEvents()
       .find(event => event.type === 'user/message' && event.data.source.kind === 'session-fleet' && event.data.source.senderSessionId === 'fleet-lead')
     expect(fleetMessage).toBeDefined()
+    expect(fleetMessage!.data.id).toBe(sent.messageId)
     expect(JSON.stringify(fleetMessage!.data.content)).toContain('please review the diff')
     expect(JSON.stringify(fleetMessage!.data.content)).toContain('peer-agent input')
 
@@ -474,12 +475,32 @@ describe('session-fleet failure paths and optionality', () => {
     expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-sub', message: 'hi' }), 'subagent session')
   })
 
-  it('reports flush failures instead of claiming acceptance', async () => {
+  it.each(['false', 'rejection'])('returns an inspectable receipt when persistence is unknown after %s', async failure => {
     const { ctx, lead, other } = await setup()
-    const spy = vi.spyOn(ctx.sessions, 'flush').mockResolvedValue(false)
-    expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-other', message: 'hi' }), 'session persistence did not acknowledge the message')
-    expect(spy).toHaveBeenCalled()
-    expect(other.session.snapshotEvents().some(event => event.type === 'user/message' && event.data.source.kind === 'session-fleet')).toBe(true)
+    const spy = vi.spyOn(ctx.sessions, 'flush')
+    if (failure === 'false') spy.mockResolvedValue(false)
+    else spy.mockRejectedValue(new Error('disk failure'))
+    const result = await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-other', message: 'hi' })
+    expect(result.isError, text(result)).not.toBe(true)
+    const receipt = JSON.parse(text(result))
+    expect(receipt).toMatchObject({ accepted: true, persistence: 'unknown', retrySafe: false })
+    expect(receipt.warning).toContain('Inspect before retrying')
+    const incoming = other.session.snapshotEvents().find(event => event.type === 'user/message' && event.data.id === receipt.messageId)
+    expect(incoming).toBeDefined()
+  })
+
+  it('marks an enqueue exception as uncertain when the target already has the message', async () => {
+    const { ctx, lead, other } = await setup()
+    const enqueue = other.followup.bind(other)
+    vi.spyOn(other, 'followup').mockImplementationOnce(message => {
+      enqueue(message)
+      throw new Error('after admission')
+    })
+    const result = await execute(ctx, lead, 'send_to_session', { session_id: other.id, message: 'uncertain enqueue' })
+    expectToolError(result, 'Delivery outcome is unknown')
+    await other.whenIdle()
+    const received = other.session.snapshotEvents().find(event => event.type === 'user/message' && event.data.source.kind === 'session-fleet')
+    expect(text(result)).toContain(received!.data.id)
   })
 
   it('rolls back partial installs when a scope registration throws', async () => {
