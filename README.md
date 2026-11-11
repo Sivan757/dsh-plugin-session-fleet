@@ -12,6 +12,12 @@ dsh plugin --profile <profile> add dsh-plugin-session-fleet
 
 The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conservative defaults. Enable **Session fleet** in the Plugins page after install.
 
+## Upgrade from 0.2.2
+
+Version 0.3.0 adds `inspect_session` to the four tools published in 0.2.2. List and search consumers must follow `hasMore` and `nextCursor` to continue beyond the first page. An accepted delivery is admission to the native queue, not task completion. Keep its `messageId` and inspect the target before retrying an unknown persistence outcome.
+
+Inspection defaults to an outline with native detail calls. Request `transcript: true` explicitly for a temporary text export. Physical source locations depend on the Host and backend. The existing Host tokenizer still governs Chinese substring recall.
+
 ## Tools installed per agent
 
 - `list_sessions` lists visible sessions with status, activity, and working directory, and starts none of them. Its default page size is the smaller of 20 and `maxListRows`; `hiddenSubagentSessions` counts only ownership exclusions, independently of a cwd filter.

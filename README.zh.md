@@ -12,6 +12,12 @@ dsh plugin --profile <profile> add dsh-plugin-session-fleet
 
 bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用保守默认值。安装后在插件页启用「会话舰队」。
 
+## 从 0.2.2 升级
+
+0.3.0 在已发布 0.2.2 的四个工具基础上新增 `inspect_session`。列表与搜索的调用方需按 `hasMore` 和 `nextCursor` 继续读取后续页。投递被接受只表示进入原生队列，不代表任务完成。请保留 `messageId`，持久化结果未知时先检查目标再决定是否重发。
+
+检查默认返回概览与原生详情调用。需要临时文本导出时显式传 `transcript: true`。原始存储位置取决于宿主与后端，中文子串召回仍由既有宿主分词器决定。
+
 ## 每个智能体安装的工具
 
 - `list_sessions`：列出可见会话及状态、活跃时间与工作目录，不会激活任何目标。默认数量取 20 与 `maxListRows` 的较小值；`hiddenSubagentSessions` 只统计所有权隐藏，与 cwd 过滤无关。
