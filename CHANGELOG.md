@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.3.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.2.2...dsh-plugin-session-fleet-v0.3.0) (2026-11-11)
+
+### Upgrade notes
+
+- List and search results are paginated. Follow `hasMore` and `nextCursor` to traverse the current authorized scope.
+- Inspection defaults to a compact outline. Set `transcript: true` explicitly to create a bounded private text export.
+- Delivery acceptance confirms queue admission. Keep `messageId` and inspect the target before retrying an unknown persistence result.
+
+### Features
+
+- Add `inspect_session` as the fifth Fleet tool, with `outline`, native event `search`, and exact-event `read` modes. Return executable detail calls and backend-provided source locations when available.
+- Return complete selected events, including tool results, with bounded neighboring summaries. Inspect stored sessions without activating an Agent.
+- Continue authorized discovery across model tool calls while preserving hidden-subagent and delivery restrictions.
+- Return stable delivery IDs and explicit persistence receipts from the native queue and steer paths.
+
+### Fixes and validation
+
+- Honor explicit creation locations, bound list sizes, and count ownership exclusions separately from cwd filtering.
+- Retain the Host search provider and tokenizer. This release adds no separate CJK index.
+- Pass 82 tests, including Loader, SQLite, archived-session reads, and actual AgentLoop calls with a test model adapter. Verify the built JavaScript bundle and package contents.
+
 ## [0.2.2](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.2.1...dsh-plugin-session-fleet-v0.2.2) (2026-10-17)
 
 
