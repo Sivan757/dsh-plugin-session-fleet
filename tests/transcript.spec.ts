@@ -33,7 +33,7 @@ it('publishes unique private snapshots and escapes row delimiters without changi
   expect(first.transcriptPath).not.toBe(second.transcriptPath)
   const content = await readFile(first.transcriptPath, 'utf8')
   expect(content.split(newline).filter(Boolean)).toHaveLength(1)
-  expect(content.split(tab)).toHaveLength(6)
+  expect(content.split(tab)).toHaveLength(7)
   expect(content).toContain('first' + slash + 'nsecond' + slash + 'tliteral' + slash + slash + 'n')
   expect(first.transcriptTruncated).toBe(false)
   if (process.platform !== 'win32') expect((await stat(first.transcriptPath)).mode & 0o777).toBe(0o600)
