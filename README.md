@@ -12,6 +12,12 @@ dsh plugin --profile <profile> add dsh-plugin-session-fleet
 
 The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conservative defaults. Enable **Session fleet** in the Plugins page after install.
 
+## Upgrade from 0.3.0
+
+Version 0.4.0 adds title filtering, literal search within one session when the full-text index is disabled, and a tool-call view with failure filtering and fixed-boundary pagination. Structured peer messages and per-agent planning guidance help agents agree on an owner and work scope before overlapping changes.
+
+The five tool names and plain-string messages remain compatible. Cross-session full-text search still requires the Host index. Coordination records express bilateral agreements; they do not implement resource locks or automatically release ownership. See the proactive coordination section for the message format and conflict rules.
+
 ## Upgrade from 0.2.2
 
 Version 0.3.0 adds `inspect_session` to the four tools published in 0.2.2. List and search consumers must follow `hasMore` and `nextCursor` to continue beyond the first page. An accepted delivery is admission to the native queue, not task completion. Keep its `messageId` and inspect the target before retrying an unknown persistence outcome.
