@@ -1,7 +1,8 @@
 /** Scoped model-facing tools for discovering, reading, creating, and messaging DSH sessions. */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { sessionListPage, SearchContinuations } from './discovery.ts'
+import { literalQuery, sessionListPage, SearchContinuations } from './discovery.ts'
+import { SessionQueryError } from '@deepseek-ai/dsh-session-query'
 import { TranscriptStore } from './transcript.ts'
 import { INSPECT_OUTPUT_SCHEMA, inspectParameters, inspectSession } from './inspection.ts'
 import type { SessionEventMetadataFilter } from '@deepseek-ai/dsh-session-query'
@@ -235,11 +236,15 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
       scoped.tools.register(
         defineTool({
           name: 'list_sessions',
-          description: 'List DSH sessions visible to the Host with status, activity time, and working directory, without starting any of them.',
+          description: 'Find Host-visible DSH sessions by title or list them with status, activity time, and working directory, without starting them.',
           parameters: {
+            query: {
+              type: 'string',
+              description: 'Optional literal title substring, case-insensitive, 1–500 UTF-16 code units. Works without a full-text index. Omit to list all sessions.'
+            },
             limit: { type: 'integer', description: `Maximum rows to return, 1 through ${config.maxListRows}. Defaults to ${Math.min(20, config.maxListRows)}.` },
             cwd: { type: 'string', description: 'Only sessions whose recorded working directory starts with this absolute path.' },
-            cursor: { type: 'string', description: 'Opaque nextCursor from the same list, cwd, and limit. Restart without it if the listing changes.' }
+            cursor: { type: 'string', description: 'Opaque nextCursor from the same query, cwd, and limit. Restart without it if the listing changes.' }
           },
           output: jsonOutput(LIST_VALUE_SCHEMA),
           async execute(args, exec) {
@@ -248,14 +253,16 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
               throw new Error(`limit must be an integer from 1 through ${config.maxListRows}`)
             }
             try {
+              const query = args.query === undefined ? undefined : literalQuery(args.query).toLowerCase()
               const { items } = await ctx.sessionController.list({}, exec.signal)
               const visible = config.includeSubagents ? items : items.filter(row => row.origin !== 'subagent')
               const prefix = args.cwd
               const filtered = visible
                 .filter(row => prefix === undefined || row.cwd?.startsWith(prefix))
+                .filter(row => query === undefined || (typeof row.projections?.values.title === 'string' && row.projections.values.title.toLowerCase().includes(query)))
                 .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
               const limit = args.limit ?? Math.min(20, config.maxListRows)
-              const page = sessionListPage(filtered, limit, prefix, args.cursor)
+              const page = sessionListPage(filtered, limit, { cwd: prefix, query }, args.cursor)
               return {
                 sessions: page.rows.map(fleetRow),
                 total: filtered.length,
@@ -276,7 +283,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
         defineTool({
           name: 'search_sessions',
           description:
-            'Search current messages in Host-visible sessions, with bounded excerpts and matching event seqs. Reuse nextCursor with identical query and filters to continue. Inspect a candidate before messaging it.',
+            'Search indexed message contents in Host-visible sessions, with bounded excerpts and matching event seqs. Reuse nextCursor with identical query and filters to continue. Inspect a candidate before messaging it.',
           parameters: {
             query: {
               type: 'string',
@@ -301,8 +308,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
             const caller = callingAgent(exec.agent, 'search_sessions')
             try {
               if (!positiveInt(args.limit, config.maxListRows)) throw new Error(`limit must be an integer from 1 through ${config.maxListRows}`)
-              const query = args.query.trim()
-              if (query.length === 0 || query.length > 500) throw new Error('query must contain 1 through 500 UTF-16 code units')
+              const query = literalQuery(args.query)
               const time = (value: string | undefined) => {
                 if (value === undefined) return undefined
                 const parsed = Date.parse(value)
@@ -376,6 +382,13 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
                     })
               }
             } catch (error: unknown) {
+              if (error instanceof SessionQueryError && error.code === 'SESSION_QUERY_SEARCH_DISABLED')
+                throw new Error(
+                  errorText(error) +
+                    '. Use list_sessions({query: ' +
+                    JSON.stringify(args.query) +
+                    '}) for title matches, then inspect_session to read a candidate. Choose a different title keyword if needed.'
+                )
               throw new Error(errorText(error))
             }
           }

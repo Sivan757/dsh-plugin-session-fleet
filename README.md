@@ -1,6 +1,6 @@
 # dsh-plugin-session-fleet
 
-Session Fleet: five model-facing tools that let one DeepSeek Harness agent discover other sessions, start a session, and message a session directly.
+Session Fleet gives a DeepSeek Harness agent five tools to find relevant session history, read original evidence, and create or message another session.
 
 English | [中文](README.zh.md)
 
@@ -16,12 +16,12 @@ The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conserv
 
 Version 0.3.0 adds `inspect_session` to the four tools published in 0.2.2. List and search consumers must follow `hasMore` and `nextCursor` to continue beyond the first page. An accepted delivery is admission to the native queue, not task completion. Keep its `messageId` and inspect the target before retrying an unknown persistence outcome.
 
-Inspection defaults to an outline with native detail calls. Request `transcript: true` explicitly for a temporary text export. Physical source locations depend on the Host and backend. The existing Host tokenizer still governs Chinese substring recall.
+Inspection defaults to an outline with native detail calls. Request `transcript: true` explicitly for a temporary text export. Physical source locations depend on the Host and backend. Indexed full-text searches retain the Host tokenizer.
 
 ## Tools installed per agent
 
-- `list_sessions` lists visible sessions with status, activity, and working directory, and starts none of them. Its default page size is the smaller of 20 and `maxListRows`; `hiddenSubagentSessions` counts only ownership exclusions, independently of a cwd filter.
-- `search_sessions` searches current user and assistant messages after restricting results to Host-authorized sessions. It accepts `cwd`, ISO 8601 `after`/`before`, `limit`, and `cursor`. Hits include a bounded snippet, matching `seq`, working directory, state, activity, and an existing title hint when available.
+- `list_sessions` lists visible sessions with status, activity, and working directory, and starts none of them. Its optional `query` matches a literal, case-insensitive title substring of 1–500 UTF-16 units, independently of the full-text index. Its default page size is the smaller of 20 and `maxListRows`; `hiddenSubagentSessions` counts only ownership exclusions, independently of a cwd filter.
+- `search_sessions` searches indexed current user and assistant messages after restricting results to Host-authorized sessions. When full-text search is disabled, the error provides a `list_sessions` title-query example. It accepts `cwd`, ISO 8601 `after`/`before`, `limit`, and `cursor`. Hits include a bounded snippet, matching `seq`, working directory, state, activity, and an existing title hint when available.
 - `inspect_session` defaults to `mode: "outline"`: a clipped outline, an optional native `source.location`, and executable `detailAccess` examples. Use `mode: "search"` with `query` to find events in that session, then `mode: "read"` with `seq` to read the complete decoded event and bounded neighboring summaries. Set `transcript: true` only in outline mode for the existing private text projection.
 - `create_session` accepts either an explicit `cwd` or an explicit `workspace_id`. Only when both are omitted does it inherit the caller’s workspace, falling back to the caller’s recorded working directory.
 - `send_to_session` delivers peer input through the DSH queue and returns a stable `messageId`, `accepted`, `persistence` (`acknowledged` or `unknown`), and `retrySafe: false`. Acceptance does not mean completion. A missing or failed flush acknowledgement produces an unknown receipt with an inspection warning, because the message may already have arrived. An enqueue exception likewise reports its message ID and an unknown outcome.
@@ -34,7 +34,7 @@ A delivery carries the dedicated `session-fleet` message source and a peer-agent
 
 ## Native detail interaction
 
-1. Call `inspect_session({ session_id })` for the outline. Its existing counts, recent inputs, last reply, and `asOfSeq` remain available. Inputs are clipped to 200 UTF-16 units and replies to 300, with clipping metadata.
+1. Call `inspect_session({ session_id })` for the outline. Counts cover raw user, assistant, and tool-call events. `recentPrompts` contains human (`user`) and Fleet peer (`session-fleet`) inputs. Injected context and coordination notices do not displace them. `lastAssistant` is the latest nonempty textual answer, and `asOfSeq` identifies the captured log boundary. Inputs are clipped to 200 UTF-16 units and replies to 300, with clipping metadata.
 2. Supply your keyword in `detailAccess.search.arguments` and call the named tool. Search accepts `query` (1–500 UTF-16 units) and `limit` (default min(20, `maxListRows`)). Hits contain `seq`, type, time, surface, and a snippet of at most 240 UTF-16 units. If `hasMore` is true, narrow the query. Native provider cursors are not exposed here. A search of the caller’s session excludes its current active step.
 3. Execute `detailAccess.read.arguments` or replace its `seq` with a hit. `before` and `after` default to 2 and accept 0–10. The target `event` is complete native JSON, including tool results and other event types. `context` contains neighboring metadata and previews of at most 300 UTF-16 units, excluding the target. `startSeq` and `endSeq` identify the observed window. Empty outlines and searches without hits omit the read example.
 
@@ -43,6 +43,14 @@ All modes check current Host visibility and subagent policy before native access
 `source.status` is `located`, `unavailable`, or `error`. A located source forwards the backend’s `{ kind, path }` without constructing a path from the session ID. `revision` is an optional opaque storage token. Older Hosts or backends may not publish a location. A locator failure is explicit in `source.reason` while the outline remains useful. The path may identify a directory or a file and need not contain the latest in-memory tail. Use the session-ID detail calls for native decoding and live reads. No read activates an Agent or forces a storage flush.
 
 Read mode preserves the full target event and imposes no byte truncation. Use programmatic tool calls to select needed fields, or configure DSH’s generic spill policy for large rendered results. The bounded outline, search snippets, context summaries, and optional TSV export have separate purposes. `transcript: true` returns `transcriptPath`, `transcriptLines`, `transcriptBytes`, `transcriptTruncated`, and `transcriptExpiresAt`.
+
+## Retrieval without a full-text index
+
+Find candidates with a title keyword, for example `list_sessions({ query: "部署" })`. `total` counts matching visible sessions. Title matching uses existing Host projection hints and keeps the ordinary pagination and subagent rules.
+
+Once you select a session, `inspect_session({ session_id, mode: "search", query })` can still locate evidence when the Host reports `SESSION_QUERY_SEARCH_DISABLED`. It reuses the Host SDK’s semantic documents and literal filters for that one native snapshot. Results carry `searchMode: "literal"`, use case-insensitive, whitespace-flexible matching, and follow event order. Snippets stay near the match. Read the selected `seq` for complete evidence. Other backend failures remain errors.
+
+This path creates no additional index and does not scan other sessions’ message bodies. A missing title match does not establish that no conversation contains the topic. Try another title keyword or use indexed message search when available.
 
 ## Compatibility
 
@@ -81,7 +89,7 @@ Peer input previews omit Fleet’s own framing note while preserving `source`, `
 
 ## Known limitations and retrieval integration
 
-Host search keeps its provider’s word/phrase tokenizer. Two-character Chinese substring recall is not guaranteed. [Sessiongraph](https://github.com/CC19990113/dsh-plugin-sessiongraph) is a separate history index with CJK bigrams. Its 0.3.3 public search interface supports time and entry-kind filters, but uses `offset` and accepts one session ID rather than an authorized ID set; it has no explicit current-surface filter or authorized ID-set input. This bundle does not install or mount Sessiongraph. Fleet therefore retains Host search rather than silently changing search semantics or building another index. Integration needs explicit history-search semantics, bounded authorization filtering, and index-generation/freshness handling.
+Indexed full-text search keeps its provider’s word/phrase tokenizer. Two-character Chinese substring recall is not guaranteed on that path. Title queries and the explicit single-session literal fallback do not use that tokenizer. [Sessiongraph](https://github.com/CC19990113/dsh-plugin-sessiongraph) is a separate history index with CJK bigrams. Its 0.3.3 public search interface supports time and entry-kind filters, but uses `offset` and accepts one session ID rather than an authorized ID set; it has no explicit current-surface filter or authorized ID-set input. This bundle does not install or mount Sessiongraph. Fleet therefore retains Host search rather than silently changing search semantics or building another index. Integration needs explicit history-search semantics, bounded authorization filtering, and index-generation/freshness handling.
 
 ## Development
 
