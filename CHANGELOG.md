@@ -2,6 +2,17 @@
 
 ## [0.4.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.3.0...dsh-plugin-session-fleet-v0.4.0) (2026-11-12)
 
+### Upgrade notes
+
+- Keep using the five Fleet tools and existing string messages. Structured `send_to_session` messages add explicit proposals, acceptance, conflict reports, handoffs and release.
+- Use `list_sessions.query` for title candidates and session-local literal search when the Host index is disabled. Cross-session full-text search still requires the Host index.
+- Use `inspect_session` with `mode: "calls"` and `errors_only: true` to locate native failures, then read the returned input and result event sequences. Follow `next` to keep the captured boundary across pages.
+- Coordination is advisory. Message receipts confirm queue admission, and historical acceptance records do not grant authority, guarantee a current owner or implement resource locks.
+
+### Validation
+
+- 123 tests pass with the Host support window, type checking, lint, formatting and production build. Native Loader and AgentLoop tests cover both coordination owner roles, handoff, exact message references and terminating acknowledgement behavior with a scripted model adapter.
+
 
 ### Features
 
