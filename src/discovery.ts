@@ -5,8 +5,15 @@ import type { SessionSummary } from '@deepseek-ai/dsh-api-session-controller/typ
 
 const listCursor = z.object({ version: z.const(1).required(), fingerprint: z.string().required(), offset: z.natural().max(Number.MAX_SAFE_INTEGER).required() })
 
+/** Validate a literal query shared by title and event discovery. */
+export function literalQuery(value: string): string {
+  const query = value.trim()
+  if (query.length === 0 || query.length > 500) throw new Error('query must contain 1 through 500 UTF-16 code units')
+  return query
+}
+
 /** Slice one stable authorized listing; a changed query or corpus invalidates its cursor. */
-export function sessionListPage(rows: readonly SessionSummary[], limit: number, scope: string | undefined, cursor?: string) {
+export function sessionListPage(rows: readonly SessionSummary[], limit: number, scope: { cwd: string | undefined; query: string | undefined }, cursor?: string) {
   const fingerprint = createHash('sha256')
     .update(JSON.stringify([scope ?? null, limit, rows.map(row => [row.sessionId, row.updatedAt, row.cwd, row.origin, row.projections?.values.title])]))
     .digest('base64url')

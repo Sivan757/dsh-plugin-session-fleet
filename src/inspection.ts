@@ -6,6 +6,8 @@ import { SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { InferValue } from '@deepseek-ai/dsh-tools'
 import type { SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
 import { TRANSCRIPT_EVENT_TYPES, type TranscriptStore } from './transcript.ts'
+import { literalQuery } from './discovery.ts'
+import { SessionQueryError, buildSessionEventSearchDocuments, compileSessionTextFilter, filterSessionEventDocuments } from '@deepseek-ai/dsh-session-query'
 
 const INSPECT_MESSAGE_SCHEMA = {
   type: 'object',
@@ -109,6 +111,7 @@ const SEARCH_SCHEMA = {
   additionalProperties: false,
   properties: {
     mode: { type: 'string', required: true, const: 'search' },
+    searchMode: { type: 'string', enum: ['literal'] },
     sessionId: { type: 'string', required: true },
     results: {
       type: 'array',
@@ -189,7 +192,7 @@ export function inspectParameters(maxRows: number) {
       description: 'Defaults to outline. Use search to find session events. Use read for one complete decoded event and neighboring summaries.'
     },
     transcript: { type: 'boolean', description: 'Only for outline: generate a bounded private text projection for grep. Defaults to false.' },
-    query: { type: 'string', description: 'Required for search: literal word or phrase, 1–500 UTF-16 code units. Short CJK matching depends on the provider.' },
+    query: { type: 'string', description: 'Required for search: word or phrase, 1–500 UTF-16 code units. Uses native literal matching when the full-text index is disabled.' },
     limit: {
       type: 'integer',
       description: 'Only for search: maximum hits, 1 through ' + maxRows + '. Defaults to the smaller of 20 and that maximum. Narrow the query if hasMore is true.'
@@ -223,6 +226,14 @@ function textPreview(content: readonly ContentBlock[], max: number): { text: str
   const last = text.charCodeAt(text.length - 1)
   if (last >= 0xd800 && last <= 0xdbff) text = text.slice(0, -1)
   return { text, truncated: true, fullLength }
+}
+
+/** Keep the literal match visible even in long commands and tool results. */
+function literalSnippet(text: string, pattern: RegExp): string {
+  let start = Math.max(0, (pattern.exec(text)?.index ?? 0) - 80)
+  const first = text.charCodeAt(start)
+  if (first >= 0xdc00 && first <= 0xdfff) start++
+  return textPreview([{ type: 'text', text: (start === 0 ? '' : '…') + text.slice(start, start + 241) }], 240).text
 }
 
 /** One message row for the inspect view, or undefined for events that are not messages. */
@@ -304,7 +315,7 @@ function validate(args: InspectArgs, maxRows: number): void {
     if (args[key] !== undefined && !allowed.includes(key)) throw new Error(key + ' is not valid in ' + mode + ' mode')
   }
   if (mode === 'search') {
-    if (args.query === undefined || args.query.trim().length === 0 || args.query.trim().length > 500) throw new Error('query must contain 1 through 500 UTF-16 code units')
+    literalQuery(args.query ?? '')
     if (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > maxRows))
       throw new Error('limit must be an integer from 1 through ' + maxRows)
   }
@@ -341,20 +352,38 @@ export async function inspectSession(
         filters.push({ kind: 'seq', to: boundary.seq - 1 })
       }
     }
-    const page = await ctx.sessionQuery.searchEvents(
-      { sessionId, query: args.query!.trim(), limit: args.limit ?? Math.min(20, config.maxListRows), ...(filters.length === 0 ? {} : { filters }) },
-      { signal }
-    )
+    const query = literalQuery(args.query!)
+    const limit = args.limit ?? Math.min(20, config.maxListRows)
+    let page: Awaited<ReturnType<Context['sessionQuery']['searchEvents']>>
+    let searchMode: 'literal' | undefined
+    let hasMore: boolean
+    try {
+      page = await ctx.sessionQuery.searchEvents({ sessionId, query, limit, ...(filters.length === 0 ? {} : { filters }) }, { signal })
+      hasMore = page.nextCursor !== undefined
+    } catch (error) {
+      signal.throwIfAborted()
+      if (!(error instanceof SessionQueryError) || error.code !== 'SESSION_QUERY_SEARCH_DISABLED') throw error
+      const snapshot = await ctx.sessionQuery.readSession(sessionId)
+      signal.throwIfAborted()
+      assertHeader(snapshot.session.id, snapshot.session.origin, args.session_id, config.includeSubagents)
+      const documents = filterSessionEventDocuments(buildSessionEventSearchDocuments(sessionId, snapshot.events), [...filters, { kind: 'text', text: query }])
+      const pattern = compileSessionTextFilter(query)
+      page = { session: snapshot.session, items: documents.slice(0, limit).map(hit => ({ ...hit, snippet: literalSnippet(hit.text, pattern) })) }
+      hasMore = documents.length > limit
+      searchMode = 'literal'
+    }
+    signal.throwIfAborted()
     assertHeader(page.session.id, page.session.origin, args.session_id, config.includeSubagents)
     return {
       mode,
       sessionId,
+      ...(searchMode === undefined ? {} : { searchMode }),
       results: page.items.map(hit => {
         if (hit.sessionId !== sessionId) throw new Error('Native event search returned a different session')
         return { seq: hit.seq, type: hit.type, time: new Date(hit.time).toISOString(), surface: hit.surface, snippet: textPreview([{ type: 'text', text: hit.snippet }], 240).text }
       }),
-      hasMore: page.nextCursor !== undefined,
-      ...(page.nextCursor === undefined ? {} : { guidance: 'More matches exist; narrow the query rather than paging a changing log.' }),
+      hasMore,
+      ...(hasMore ? { guidance: 'More matches exist; narrow the query rather than paging a changing log.' } : {}),
       detailAccess: detailAccess(sessionId, page.items[0]?.seq)
     }
   }
@@ -384,11 +413,13 @@ export async function inspectSession(
   for (const event of events) {
     if (event.type === 'user/message') {
       counts.user++
-      promptEvents.push(event)
-      if (promptEvents.length > RECENT_PROMPTS) promptEvents.shift()
+      if (event.data.source.kind === 'user' || event.data.source.kind === 'session-fleet') {
+        promptEvents.push(event)
+        if (promptEvents.length > RECENT_PROMPTS) promptEvents.shift()
+      }
     } else if (event.type === 'assistant/message') {
       counts.assistant++
-      assistantEvent = event
+      if (event.data.message.content.some(block => block.type === 'text' && /\S/.test(block.text))) assistantEvent = event
     } else if (event.type === 'tool/call') counts.toolCalls++
     if (!TRANSCRIPT_EVENT_TYPES.some(type => type === event.type)) omitted.add(event.type)
   }

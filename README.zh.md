@@ -1,6 +1,6 @@
 # dsh-plugin-session-fleet
 
-Session Fleet：五个面向模型的工具，让一个 DeepSeek Harness 智能体发现其他会话、创建会话，并直接向某个会话发消息。
+Session Fleet 为 DeepSeek Harness 智能体提供五个工具，用于定位相关会话历史、读取原始证据，以及创建会话或向其他会话发消息。
 
 [English](README.md) | 中文
 
@@ -16,12 +16,12 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 0.3.0 在已发布 0.2.2 的四个工具基础上新增 `inspect_session`。列表与搜索的调用方需按 `hasMore` 和 `nextCursor` 继续读取后续页。投递被接受只表示进入原生队列，不代表任务完成。请保留 `messageId`，持久化结果未知时先检查目标再决定是否重发。
 
-检查默认返回概览与原生详情调用。需要临时文本导出时显式传 `transcript: true`。原始存储位置取决于宿主与后端，中文子串召回仍由既有宿主分词器决定。
+检查默认返回概览与原生详情调用。需要临时文本导出时显式传 `transcript: true`。原始存储位置取决于宿主与后端，有索引的全文搜索保留既有宿主分词器。
 
 ## 每个智能体安装的工具
 
-- `list_sessions`：列出可见会话及状态、活跃时间与工作目录，不会激活任何目标。默认数量取 20 与 `maxListRows` 的较小值；`hiddenSubagentSessions` 只统计所有权隐藏，与 cwd 过滤无关。
-- `search_sessions`：先限定 Host 允许访问的会话，再搜索当前用户与助手消息。支持 `cwd`、ISO 8601 时间 `after`/`before`、`limit` 和 `cursor`；命中包含有界片段、事件 `seq`、目录、状态、活跃时间及已有标题提示。
+- `list_sessions`：列出可见会话及状态、活跃时间与工作目录，不会激活任何目标。可选 `query` 按标题做不区分大小写的字面子串匹配，接受 1–500 个 UTF-16 代码单元，不依赖全文索引。默认数量取 20 与 `maxListRows` 的较小值；`hiddenSubagentSessions` 只统计所有权隐藏，与 cwd 过滤无关。
+- `search_sessions`：先限定 Host 允许访问的会话，再搜索有索引的当前用户与助手消息。全文搜索被停用时，错误提供 `list_sessions` 标题查询示例。支持 `cwd`、ISO 8601 时间 `after`/`before`、`limit` 和 `cursor`；命中包含有界片段、事件 `seq`、目录、状态、活跃时间及已有标题提示。
 - `inspect_session` 默认 `mode: "outline"`，返回截断概览、宿主可提供的原始 `source.location` 和可执行的 `detailAccess` 示例。用 `mode: "search"` 与 `query` 查询会话内事件，再用 `mode: "read"` 与 `seq` 读取完整解码事件及有界相邻摘要。原有私有文本投影仅在概览模式显式传 `transcript: true` 时导出。
 - `create_session`：接受显式 `cwd` 或 `workspace_id`，两者互斥。只有两者都省略时才继承调用者 workspace，找不到时使用调用者记录的工作目录。
 - `send_to_session`：经 DSH 队列投递对等输入，返回稳定 `messageId`、`accepted`、`persistence`（`acknowledged` 或 `unknown`）及 `retrySafe: false`。接受不代表处理完成。flush 未确认或失败时仍可能已经送达，因此返回带检查提示的未知收据。入队异常也会在错误中提供消息 ID 并明确结果未知。
@@ -32,7 +32,7 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 ## 原生详情交互
 
-1. 调用 `inspect_session({ session_id })` 读取概览，原有计数、最近输入、最后回复与 `asOfSeq` 仍保留。输入至多 200 个 UTF-16 代码单元，回复至多 300 个，并保留截断标识。
+1. 调用 `inspect_session({ session_id })` 读取概览，计数覆盖原始用户、助手与工具调用事件。`recentPrompts` 只列人类（`user`）和 Fleet 对等输入（`session-fleet`），注入上下文与协调通知不会挤占它们。`lastAssistant` 指向最近一条非空的文本回复，`asOfSeq` 标明所取日志的边界。输入至多 200 个 UTF-16 代码单元，回复至多 300 个，并保留截断标识。
 2. 在 `detailAccess.search.arguments` 中补充关键词，再调用给出的工具。搜索接受 `query`（1–500 个 UTF-16 代码单元）和 `limit`（默认取 20 与 `maxListRows` 的较小值）。命中返回 `seq`、类型、时间、视图与至多 240 个 UTF-16 代码单元的片段。`hasMore` 为 true 时缩小条件，此模式不暴露 provider 游标。查询调用者自身会话时排除当前活动 step。
 3. 执行 `detailAccess.read.arguments`，或将其中 `seq` 替换成命中序号。`before` 与 `after` 默认 2，范围 0–10。目标 `event` 保留完整原生 JSON，包括工具结果与其他事件类型。`context` 只含相邻事件的元信息与至多 300 个 UTF-16 代码单元的预览，不重复目标。`startSeq` 与 `endSeq` 标明观察到的窗口。空会话或搜索无命中时不提供读取示例。
 
@@ -41,6 +41,14 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 `source.status` 为 `located`、`unavailable` 或 `error`。定位成功时原样转交后端的 `{ kind, path }`，不根据会话 ID 拼接路径。`revision` 是可选的不透明存储标记。较旧宿主或某些后端可能不提供位置。定位异常会在 `source.reason` 中明确报告，概览仍可使用。路径可能指向目录或文件，也不保证包含最新内存尾部；请使用按会话 ID 的详情调用，让宿主负责解码与实时读取。读取不会激活 Agent 或强制 flush。
 
 读取模式保留完整目标事件，不按字节截断。可在程序化工具调用中只选取需要的字段，或配置 DSH 通用 spill 策略限制较大结果的内联显示。有界概览、搜索片段、相邻摘要和可选 TSV 导出各有用途。`transcript: true` 仍返回 `transcriptPath`、`transcriptLines`、`transcriptBytes`、`transcriptTruncated` 与 `transcriptExpiresAt`。
+
+## 全文索引停用时的检索
+
+先按标题关键词定位候选，例如 `list_sessions({ query: "部署" })`。`total` 统计匹配的可见会话。标题匹配使用宿主已有的投影提示，沿用分页与子会话规则。
+
+选定会话后，即使宿主返回 `SESSION_QUERY_SEARCH_DISABLED`，仍可用 `inspect_session({ session_id, mode: "search", query })` 定位证据。它对这一个原生快照复用宿主 SDK 的语义文档和字面过滤函数。结果带 `searchMode: "literal"`，不区分大小写、允许空白差异，并按事件顺序返回。片段保留匹配位置附近的文本，再按 `seq` 读取完整原文。其他后端故障仍作为错误返回。
+
+这条路径不新增索引，也不扫描其他会话的消息正文。标题没有匹配不代表会话正文没有提到该主题，可换用其他标题关键词，或在全文索引可用时搜索消息。
 
 ## 兼容范围
 
@@ -79,7 +87,7 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 ## 已知限制与检索集成
 
-宿主搜索沿用 provider 的词项/短语分词，不保证中文两字子串召回。[Sessiongraph](https://github.com/CC19990113/dsh-plugin-sessiongraph) 是支持 CJK 二元词的独立历史索引。其 0.3.3 公开搜索接口支持时间与条目类型过滤，但使用 `offset`、只接受单个会话 ID，未提供显式的当前消息视图过滤或授权 ID 集合输入。本 bundle 不安装或挂载 Sessiongraph。因此 Fleet 保留宿主检索，避免悄然改变搜索语义或另建索引。后续集成需明确历史搜索语义、设定有界授权过滤，并处理索引代际与新鲜度。
+有索引的全文搜索沿用 provider 的词项/短语分词，该路径不保证中文两字子串召回。标题查询和显式标记的单会话字面过滤不使用该分词器。[Sessiongraph](https://github.com/CC19990113/dsh-plugin-sessiongraph) 是支持 CJK 二元词的独立历史索引。其 0.3.3 公开搜索接口支持时间与条目类型过滤，但使用 `offset`、只接受单个会话 ID，未提供显式的当前消息视图过滤或授权 ID 集合输入。本 bundle 不安装或挂载 Sessiongraph。因此 Fleet 保留宿主检索，避免悄然改变搜索语义或另建索引。后续集成需明确历史搜索语义、设定有界授权过滤，并处理索引代际与新鲜度。
 
 ## 开发
 
