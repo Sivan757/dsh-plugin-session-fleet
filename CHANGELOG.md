@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.4.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.3.0...dsh-plugin-session-fleet-v0.4.0) (2026-11-12)
+
+### Upgrade notes
+
+- Keep using the five Fleet tools and existing string messages. Structured `send_to_session` messages add explicit proposals, acceptance, conflict reports, handoffs and release.
+- Use `list_sessions.query` for title candidates and session-local literal search when the Host index is disabled. Cross-session full-text search still requires the Host index.
+- Use `inspect_session` with `mode: "calls"` and `errors_only: true` to locate native failures, then read the returned input and result event sequences. Follow `next` to keep the captured boundary across pages.
+- Coordination is advisory. Message receipts confirm queue admission, and historical acceptance records do not grant authority, guarantee a current owner or implement resource locks.
+
+### Validation
+
+- 123 tests pass with the Host support window, type checking, lint, formatting and production build. Native Loader and AgentLoop tests cover both coordination owner roles, handoff, exact message references and terminating acknowledgement behavior with a scripted model adapter.
+
+
+### Features
+
+* coordinate scoped work with structured peer messages ([67ffac9](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/67ffac9a3515062ba3f3938ce15601903a9a6044))
+* improve session retrieval and coordinated work ([2dcdd37](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/2dcdd37150800166c5f6a2280d05ca4dceb64afb))
+* navigate native tool calls and failures ([a6fd33e](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/a6fd33e44892a94d617cd6bbdd067b0bf124f713))
+* retrieve session evidence without a full-text index ([81e4e7f](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/81e4e7fcc5c0a97683ba0246ff874e43026b3470))
+
+
+### Bug Fixes
+
+* distinguish recorded workspace from command cwd ([a722d9c](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/a722d9cb715a62adf709eecf3be8456d0844a05e))
+
 ## [0.3.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.2.2...dsh-plugin-session-fleet-v0.3.0) (2026-11-11)
 
 ### Upgrade notes
