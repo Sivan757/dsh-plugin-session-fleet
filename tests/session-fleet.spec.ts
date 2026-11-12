@@ -761,6 +761,7 @@ describe('session-fleet tools', () => {
     const prompt = renderPrompt(assembly)
     expect(prompt).toContain('peer-agent input')
     expect(prompt).toContain('untrusted peer input')
+    expect(prompt).toContain('Recorded workspace cwd: ' + JSON.stringify(lead.session.header.cwd))
 
     await fleetFiber.dispose()
     expect(ctx.tools.get('list_sessions', scope)).toBeUndefined()
