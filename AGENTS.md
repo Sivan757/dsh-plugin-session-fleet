@@ -34,3 +34,7 @@ Every host pin carries the support window `>=0.2.0-rc.2 <0.3.0-0`; only `devDepe
 - A tool that reaches another session states that the delivery is peer input, not user input, in both the tool description and the framing note.
 - Subagent sessions stay hidden by default and refusing delivery to them stays unconditional.
 - A change to a tool name, parameter, output field, or config default updates `README.md` and `README.zh.md` in the same edit.
+
+## Deliver each optimization
+
+After each functional optimization, build the bundle and connect it to the current DSH profile. Use Plugin Manager for profile changes, or verify the existing local source link. Query the live tool catalog and exercise the changed capability through real calls before reporting it ready. Package versions alone do not identify the loaded code generation. If a linked checkout still exposes the old catalog after building, follow Plugin Manager’s remount or restart instructions and verify again before reporting it ready. Record the observed result and notify the user with a concrete prompt they can try.

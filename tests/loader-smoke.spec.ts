@@ -18,6 +18,7 @@ import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterEach, expect, it, vi } from 'vitest'
 import * as yaml from 'js-yaml'
@@ -178,6 +179,25 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
       },
       options => {
         capture(options)
+        return toolCallResponse('native-calls', 'inspect_session', { session_id: 'fleet-native-reader', mode: 'calls', limit: 1 })
+      },
+      options => {
+        const page = capture(options)
+        expect(page.counts).toEqual({ outer: 3, nested: 0, failed: 0, pending: 0 })
+        expect(page.calls).toHaveLength(1)
+        expect(page.calls[0].status).toBe('succeeded')
+        expect(page.next.arguments.until_seq).toBe(page.asOfSeq)
+        return toolCallResponse('native-calls-next', page.next.tool, page.next.arguments)
+      },
+      options => {
+        const page = capture(options)
+        expect(page.counts.outer).toBe(3)
+        expect(page.total).toBe(3)
+        expect(page.detailAccess.read.arguments.seq).toBe(page.calls[0].resultSeq)
+        return toolCallResponse('native-call-result', page.detailAccess.read.tool, page.detailAccess.read.arguments)
+      },
+      options => {
+        expect(capture(options).event.type).toBe('tool/result')
         return textResponse('native detail verified')
       }
     ])
@@ -185,7 +205,7 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   const reader = await ctx.agentLoop.create(SessionId('fleet-native-reader'), { provider: 'fleet-native-details', model: 'mock' }, { cwd: workspace.path })
   reader.followup(createUserMessage({ content: [{ type: 'text', text: 'Inspect the selected archived session and read its matching original event.' }], source: { kind: 'user' } }))
   await reader.whenIdle()
-  expect(nativeSteps.map(text => JSON.parse(text).mode)).toEqual(['outline', 'search', 'read'])
+  expect(nativeSteps.map(text => JSON.parse(text).mode)).toEqual(['outline', 'search', 'read', 'calls', 'calls', 'read'])
   const readEvent = JSON.parse(nativeSteps[2]!).event
   expect(readEvent).toEqual(original.snapshotEvents().find(event => event.seq === readEvent.seq))
   expect(readEvent.data.content.some((block: { text?: string }) => block.text === 'loader smoke message')).toBe(true)
@@ -207,6 +227,147 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   await selfReader.whenIdle()
   expect(selfResults).toHaveLength(1)
   expect(JSON.parse(selfResults[0]!)).toMatchObject({ mode: 'search', results: [], hasMore: false })
+  const ownerId = SessionId('coord-owner')
+  const reviewerId = SessionId('coord-reviewer')
+  const sharedFile = join(workspace.path, 'coordination-proof.txt')
+  const observed = Promise.withResolvers<void>()
+  const receivedCoordination = (options: import('@deepseek-ai/dsh-llm').GenerateOptions) => {
+    const message = options.messages.findLast(item => item.role === 'user' && item.source.kind === 'session-fleet')
+    if (message?.role !== 'user' || message.source.kind !== 'session-fleet' || message.source.coordination === undefined) throw new Error('missing native coordination message')
+    expect(message.content[0]).toMatchObject({ text: expect.stringContaining(message.id) })
+    return { id: message.id, contract: message.source.coordination }
+  }
+  let writes = 0
+  let acceptanceId = ''
+  ctx.llm.registerAdapter(
+    ['coord-owner'],
+    new MockAdapter([
+      toolCallResponse('coord-discover', 'list_sessions', { cwd: workspace.path }),
+      () => toolCallResponse('coord-inspect', 'inspect_session', { session_id: reviewerId }),
+      () =>
+        toolCallResponse('coord-propose', 'send_to_session', {
+          session_id: reviewerId,
+          message: {
+            kind: 'propose',
+            task: 'Implement shared validation',
+            owner: ownerId,
+            scope: ['write:' + sharedFile],
+            summary: 'I implement validation. Please review without modifying this file.',
+            next: 'Accept the division or identify the overlap before work starts.'
+          }
+        }),
+      options => {
+        expect(JSON.parse(toolText(options))).toMatchObject({ accepted: true, retrySafe: false })
+        expect(writes).toBe(0)
+        return textResponse('Proposal delivered. Awaiting explicit agreement.')
+      },
+      options => {
+        const accepted = receivedCoordination(options)
+        expect(accepted.contract).toMatchObject({ kind: 'accept', owner: ownerId, scope: ['write:' + sharedFile] })
+        acceptanceId = accepted.id
+        writeFileSync(sharedFile, 'validation complete')
+        writes++
+        return toolCallResponse('coord-complete', 'send_to_session', {
+          session_id: reviewerId,
+          message: { kind: 'complete', reply_to: acceptanceId, summary: 'Validation complete; artifact is saved at the agreed path.' }
+        })
+      },
+      () => textResponse('Completed the agreed scope.')
+    ])
+  )
+  ctx.llm.registerAdapter(
+    ['coord-reviewer'],
+    new MockAdapter([
+      options => {
+        const proposed = receivedCoordination(options)
+        expect(proposed.contract.kind).toBe('propose')
+        return toolCallResponse('coord-accept', 'send_to_session', {
+          session_id: ownerId,
+          message: { kind: 'accept', reply_to: proposed.id, summary: 'Agreed. I review only and leave the shared file to you.' }
+        })
+      },
+      () => textResponse('Accepted the scope; no further acknowledgement is needed.'),
+      options => {
+        expect(receivedCoordination(options).contract.kind).toBe('complete')
+        observed.resolve()
+        return textResponse('Completion observed. No acknowledgement sent.')
+      }
+    ])
+  )
+  const owner = await ctx.agentLoop.create(ownerId, { provider: 'coord-owner', model: 'mock' }, { cwd: workspace.path })
+  const reviewer = await ctx.agentLoop.create(reviewerId, { provider: 'coord-reviewer', model: 'mock' }, { cwd: workspace.path })
+  owner.followup(createUserMessage({ content: [{ type: 'text', text: 'Coordinate the authorized shared validation work before editing.' }], source: { kind: 'user' } }))
+  await observed.promise
+  await owner.whenIdle()
+  await reviewer.whenIdle()
+  expect(writes).toBe(1)
+  expect(await readFile(sharedFile, 'utf8')).toBe('validation complete')
+  const contracts = (await Promise.all([ctx.sessionQuery.readSession(ownerId), ctx.sessionQuery.readSession(reviewerId)])).flatMap(snapshot =>
+    snapshot.events.flatMap(event => (event.type === 'user/message' && event.data.source.kind === 'session-fleet' ? [event.data.source.coordination?.kind] : []))
+  )
+  expect(contracts.sort()).toEqual(['accept', 'complete', 'propose'])
+  const assigneeId = SessionId('coord-assignee')
+  const assigneeDone = Promise.withResolvers<void>()
+  let receivedProposalId = ''
+  ctx.llm.registerAdapter(
+    ['coord-assignee'],
+    new MockAdapter([
+      options => {
+        receivedProposalId = receivedCoordination(options).id
+        return toolCallResponse('assignee-accept', 'send_to_session', {
+          session_id: caller.id,
+          message: { kind: 'accept', reply_to: receivedProposalId, summary: 'I accept the assigned scope.' }
+        })
+      },
+      () =>
+        toolCallResponse('assignee-complete', 'send_to_session', {
+          session_id: caller.id,
+          message: { kind: 'complete', reply_to: receivedProposalId, summary: 'Assigned work completed and checked.' }
+        }),
+      () =>
+        toolCallResponse('assignee-handoff', 'send_to_session', {
+          session_id: caller.id,
+          message: {
+            kind: 'handoff',
+            reply_to: receivedProposalId,
+            task: 'Assigned review',
+            owner: caller.id,
+            scope: ['write:/fixture/review'],
+            summary: 'My work is saved and I have stopped.',
+            next: 'Accept the handoff before resuming the scope.'
+          }
+        }),
+      () =>
+        toolCallResponse('assignee-release', 'send_to_session', {
+          session_id: caller.id,
+          message: { kind: 'release', reply_to: receivedProposalId, summary: 'Stopped; the scope is released.' }
+        }),
+      () => {
+        assigneeDone.resolve()
+        return textResponse('Assignee lifecycle verified.')
+      }
+    ])
+  )
+  const assignee = await ctx.agentLoop.create(assigneeId, { provider: 'coord-assignee', model: 'mock' }, { cwd: workspace.path })
+  const assignment = await execute('send_to_session', {
+    session_id: assignee.id,
+    message: {
+      kind: 'propose',
+      task: 'Assigned review',
+      owner: assignee.id,
+      scope: ['write:/fixture/review'],
+      summary: 'Please own the review scope; I will leave it unchanged.',
+      next: 'Accept or identify a conflict.'
+    }
+  })
+  await assigneeDone.promise
+  await assignee.whenIdle()
+  await caller.whenIdle()
+  const receivedReplies = (await ctx.sessionQuery.readSession(caller.id)).events.flatMap(event =>
+    event.type === 'user/message' && event.data.source.kind === 'session-fleet' && event.data.source.senderSessionId === assignee.id ? [event.data.source.coordination] : []
+  )
+  expect(receivedReplies.map(reply => reply?.kind)).toEqual(['accept', 'complete', 'handoff', 'release'])
+  expect(receivedReplies[0]?.reply_to).toBe(assignment.messageId)
   await ctx.loader.resolve('fleet').fiber!.dispose()
   expect(ctx.tools.get('send_to_session', scopeOf(caller.ctx))).toBeUndefined()
 })

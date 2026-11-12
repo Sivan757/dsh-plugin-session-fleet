@@ -12,7 +12,8 @@ import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
 import { jsonlPersistencePlugin as JsonlSessionPersistence } from '../testkit/jsonl-persistence.ts'
-import SessionQueryEngine, { SessionSearchCursor } from '@deepseek-ai/dsh-session-query'
+import SessionQueryEngine, { SessionQueryError, SessionSearchCursor } from '@deepseek-ai/dsh-session-query'
+import SqliteSessionQuery from '@deepseek-ai/dsh-session-query-sqlite'
 import { renderPrompt } from '@deepseek-ai/dsh-system-prompt'
 import { RemoteError } from '@deepseek-ai/dsh-typert-protocol'
 import { MockAdapter, textResponse, toolCallResponse } from '../testkit/mock-adapter.ts'
@@ -72,7 +73,7 @@ interface Fixture {
  * stub over three real agents: two sharing the caller workspace and one
  * recorded elsewhere.
  */
-async function setup(config: fleet.Config = {}, script: ConstructorParameters<typeof MockAdapter>[0] = []): Promise<Fixture> {
+async function setup(config: fleet.Config = {}, script: ConstructorParameters<typeof MockAdapter>[0] = [], index: 'stub' | 'never' = 'stub'): Promise<Fixture> {
   const full = fleet.Config(config)
   const ctx = new Context()
   contexts.add(ctx)
@@ -82,7 +83,8 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
   const cwd = mkdtempSync(join(tmpdir(), 'dsh-session-fleet-cwd-'))
   roots.push(cwd)
   await ctx.plugin(JsonlSessionPersistence, { root: storageRoot })
-  await ctx.plugin(TestSessionQuery)
+  if (index === 'never') await ctx.plugin(SqliteSessionQuery, { path: ':memory:', openAt: 'never' })
+  else await ctx.plugin(TestSessionQuery)
   await ctx.plugin(AgentLoop, { agents: [] })
   ctx.llm.registerAdapter(['mock'], new MockAdapter(script))
   const lead = await ctx.agentLoop.create(SessionId('fleet-lead'), { provider: 'mock', model: 'mock' }, { cwd })
@@ -260,6 +262,199 @@ describe('fleet discovery continuation', () => {
   })
 })
 
+describe('history retrieval without a full-text index', () => {
+  it('finds title candidates in one bounded call instead of traversing 863 sessions', async () => {
+    const { ctx, lead } = await setup()
+    const base = (await ctx.sessionController.list({}, SIGNAL)).items[0]!
+    const rows = Array.from({ length: 864 }, (_, index) => ({
+      ...base,
+      sessionId: SessionId('catalog-' + index),
+      updatedAt: 1_700_000_000_000 + index,
+      ...(index === 863 ? { origin: 'subagent' as const } : {}),
+      projections: { kind: 'cached' as const, asOfSeq: 0, values: { title: index >= 859 ? '部署：service-' + index : 'Unrelated task ' + index } }
+    }))
+    vi.spyOn(ctx.sessionController, 'list').mockResolvedValue({ items: rows })
+    const nativeSearch = vi.spyOn(ctx.sessionQuery, 'searchSessions').mockRejectedValue(new SessionQueryError('index disabled', 'SESSION_QUERY_SEARCH_DISABLED'))
+    const legacy: string[] = []
+    let cursor: string | undefined
+    let legacyCalls = 0
+    do {
+      const page = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 50, ...(cursor === undefined ? {} : { cursor }) })))
+      legacyCalls++
+      legacy.push(...page.sessions.filter((row: { title?: string }) => row.title?.includes('部署')).map((row: { sessionId: string }) => row.sessionId))
+      cursor = page.nextCursor
+    } while (cursor !== undefined)
+    const filtered = await execute(ctx, lead, 'list_sessions', { query: '部署', limit: 50 })
+    expect(filtered.isError, text(filtered)).not.toBe(true)
+    const page = JSON.parse(text(filtered))
+    expect(page.sessions.map((row: { sessionId: string }) => row.sessionId)).toEqual(legacy)
+    expect(page.total).toBe(4)
+    expect(page.hasMore).toBe(false)
+    expect(page.hiddenSubagentSessions).toBe(1)
+    expect(legacyCalls).toBe(18)
+    expect(nativeSearch).not.toHaveBeenCalled()
+  })
+
+  it('binds title cursors to the query even when both queries match the same rows', async () => {
+    const { ctx, lead } = await setup()
+    const { items } = await ctx.sessionController.list({}, SIGNAL)
+    vi.spyOn(ctx.sessionController, 'list').mockResolvedValue({
+      items: items.map(row => ({ ...row, projections: { kind: 'cached', asOfSeq: 0, values: { title: 'Deploy service' } } }))
+    })
+    const args = { query: '  dEpLoY  ', cwd: lead.session.header.cwd, limit: 1 }
+    const first = JSON.parse(text(await execute(ctx, lead, 'list_sessions', args)))
+    const next = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { ...args, cursor: first.nextCursor })))
+    expect(first.total).toBe(2)
+    expect(next.hasMore).toBe(false)
+    expect(next.sessions[0].sessionId).not.toBe(first.sessions[0].sessionId)
+    expectToolError(await execute(ctx, lead, 'list_sessions', { ...args, query: 'service', cursor: first.nextCursor }), 'changed')
+    expectToolError(await execute(ctx, lead, 'list_sessions', { query: '   ' }), 'query must contain')
+    expectToolError(await execute(ctx, lead, 'list_sessions', { query: 'x'.repeat(501) }), 'query must contain')
+  })
+
+  it('explains the title-discovery recovery when cross-session full-text search is disabled', async () => {
+    const { ctx, lead } = await setup()
+    vi.spyOn(ctx.sessionQuery, 'searchSessions').mockRejectedValueOnce(new SessionQueryError('index openAt never', 'SESSION_QUERY_SEARCH_DISABLED'))
+    const result = await execute(ctx, lead, 'search_sessions', { query: '部署' })
+    expectToolError(result, 'index openAt never')
+    expect(text(result)).toContain('list_sessions')
+    expect(text(result)).toContain('query')
+  })
+
+  it('retains conversational prompts and the latest textual answer after injected context and empty assistant messages', async () => {
+    const { ctx, lead, other } = await setup({}, [textResponse('The service is ready.')])
+    other.followup(createUserMessage({ content: [{ type: 'text', text: 'Deploy the selected service.' }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const snapshot = await ctx.sessionQuery.readSession(other.id)
+    const prompt = snapshot.events.find(event => event.type === 'user/message')!
+    const answer = snapshot.events.find(event => event.type === 'assistant/message')!
+    if (prompt.type !== 'user/message' || answer.type !== 'assistant/message') throw new Error('missing fixture conversation')
+    const nextSeq = snapshot.events.at(-1)!.seq + 1
+    const injected = ['runtime-context', 'skill-catalog', 'goal', 'tool-goal'].map((kind, index) => ({
+      ...prompt,
+      seq: SessionSeq(nextSeq + index),
+      data: { ...createUserMessage({ content: [{ type: 'text', text: 'Machine-generated context: ' + kind }], source: { kind: 'user' } }), source: { kind } as never }
+    }))
+    const empty = { ...answer, seq: SessionSeq(nextSeq + injected.length), data: { ...answer.data, message: { ...answer.data.message, content: [] } } }
+    vi.spyOn(ctx.sessionQuery, 'readSession').mockResolvedValueOnce({ ...snapshot, events: [...snapshot.events, ...injected, empty] })
+    const outline = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id })))
+    expect(outline.recentPrompts.map((row: { text: string }) => row.text)).toEqual(['Deploy the selected service.'])
+    expect(outline.lastAssistant).toMatchObject({ seq: answer.seq, text: 'The service is ready.' })
+    expect(outline.detailAccess.read.arguments.seq).toBe(answer.seq)
+    expect(outline.counts.user).toBe(5)
+  })
+
+  it('uses native literal filtering for one session when the index is disabled, with a snippet around the match', async () => {
+    const { ctx, lead, other } = await setup()
+    const body = 'prefix '.repeat(100) + '自托管 dOcKeR\n[stable].v1' + ' suffix'.repeat(100)
+    for (let index = 0; index < 2; index++) {
+      other.followup(createUserMessage({ content: [{ type: 'text', text: body }], source: { kind: 'user' } }))
+      await other.whenIdle()
+    }
+    vi.spyOn(ctx.sessionQuery, 'searchEvents').mockRejectedValue(new SessionQueryError('index disabled', 'SESSION_QUERY_SEARCH_DISABLED'))
+    const result = await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode: 'search', query: '自托管 Docker [stable].v1', limit: 1 })
+    expect(result.isError, text(result)).not.toBe(true)
+    const page = JSON.parse(text(result))
+    expect(page.searchMode).toBe('literal')
+    expect(page.results).toHaveLength(1)
+    expect(page.hasMore).toBe(true)
+    expect(page.results[0].snippet).toContain('自托管')
+    expect(page.results[0].snippet).toContain('[stable].v1')
+    expect(page.results[0].snippet.length).toBeLessThanOrEqual(240)
+    const read = JSON.parse(text(await execute(ctx, lead, page.detailAccess.read.tool, page.detailAccess.read.arguments)))
+    expect(read.event.data.content[0].text).toBe(body)
+  })
+})
+
+describe('unindexed retrieval safety and actual AgentLoop', () => {
+  it('recovers from disabled search, finds a cold session, and reads evidence through actual model tool results', async () => {
+    const { ctx, lead, other } = await setup({}, [], 'never')
+    const body = '部署验收：service A is ready. Evidence-marker [v1].'
+    other.followup(createUserMessage({ content: [{ type: 'text', text: body }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const coldId = SessionId('cold-retrieval-fixture')
+    const stored = await ctx.get('sessionPersistence')!.create({ ...other.session.header, id: coldId })
+    try {
+      await stored.append(other.session.snapshotEvents())
+      await stored.flush()
+    } finally {
+      await stored.close()
+    }
+    const { items } = await ctx.sessionController.list({}, SIGNAL)
+    const cold = {
+      ...items.find(row => row.sessionId === other.id)!,
+      sessionId: coldId,
+      agentAvailable: false,
+      projections: { kind: 'cached' as const, asOfSeq: 0, values: { title: '部署：service A' } }
+    }
+    vi.spyOn(ctx.sessionController, 'list').mockResolvedValue({ items: [...items, cold] })
+    const resolve = vi.spyOn(ctx.sessionController, 'resolveAgent')
+    const observations: string[] = []
+    const lastToolText = (options: import('@deepseek-ai/dsh-llm').GenerateOptions) => {
+      const value = options.messages
+        .findLast(message => message.role === 'tool')!
+        .content.flatMap(block => (block.type === 'text' ? [block.text] : []))
+        .join('')
+      observations.push(value)
+      return value
+    }
+    ctx.llm.registerAdapter(
+      ['unindexed-retrieval'],
+      new MockAdapter([
+        toolCallResponse('discover', 'search_sessions', { query: '部署' }),
+        options => {
+          expect(lastToolText(options)).toContain('list_sessions')
+          return toolCallResponse('titles', 'list_sessions', { query: '部署' })
+        },
+        options => {
+          const listed = JSON.parse(lastToolText(options))
+          expect(listed.total).toBe(1)
+          return toolCallResponse('outline', 'inspect_session', { session_id: listed.sessions[0].sessionId })
+        },
+        options => {
+          const outline = JSON.parse(lastToolText(options))
+          expect(outline.recentPrompts[0].text).toBe(body)
+          return toolCallResponse('locate', outline.detailAccess.search.tool, { ...outline.detailAccess.search.arguments, query: 'evidence-marker [v1]' })
+        },
+        options => {
+          const page = JSON.parse(lastToolText(options))
+          expect(page.searchMode).toBe('literal')
+          expect(page.results).toHaveLength(1)
+          return toolCallResponse('evidence', page.detailAccess.read.tool, page.detailAccess.read.arguments)
+        },
+        options => {
+          const detail = JSON.parse(lastToolText(options))
+          expect(detail.event.data.content[0].text).toBe(body)
+          return toolCallResponse('self-isolation', 'inspect_session', { session_id: 'unindexed-reader', mode: 'search', query: 'needle-only-in-the-active-tool-7281' })
+        },
+        options => {
+          expect(JSON.parse(lastToolText(options))).toMatchObject({ searchMode: 'literal', results: [], hasMore: false })
+          return textResponse('verified archived evidence')
+        }
+      ])
+    )
+    const reader = await ctx.agentLoop.create(SessionId('unindexed-reader'), { provider: 'unindexed-retrieval', model: 'mock' }, { cwd: lead.session.header.cwd })
+    reader.followup(createUserMessage({ content: [{ type: 'text', text: 'Find the previous deployment conversation and cite its evidence.' }], source: { kind: 'user' } }))
+    await reader.whenIdle()
+    expect(observations).toHaveLength(6)
+    expect(ctx.agents.get(coldId)).toBeUndefined()
+    expect(resolve).not.toHaveBeenCalled()
+  })
+
+  it('does not scan after operational failures and rechecks the fallback snapshot identity', async () => {
+    const { ctx, lead, other } = await setup()
+    const native = vi.spyOn(ctx.sessionQuery, 'searchEvents')
+    const read = vi.spyOn(ctx.sessionQuery, 'readSession')
+    native.mockRejectedValueOnce(new SessionQueryError('broken store', 'SESSION_QUERY_PERSISTENCE_FAILED'))
+    expectToolError(await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode: 'search', query: 'needle' }), 'broken store')
+    expect(read).not.toHaveBeenCalled()
+    const snapshot = await ctx.sessionQuery.readSession(other.id)
+    native.mockRejectedValueOnce(new SessionQueryError('disabled', 'SESSION_QUERY_SEARCH_DISABLED'))
+    read.mockResolvedValueOnce({ ...snapshot, session: { ...snapshot.session, id: lead.id } })
+    expectToolError(await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode: 'search', query: 'needle' }), 'different session')
+  })
+})
+
 describe('native inspection interaction', () => {
   it('returns the backend locator and a directly executable read example', async () => {
     const { ctx, lead, other } = await setup()
@@ -358,7 +553,7 @@ describe('native inspection interaction', () => {
     expect(outline.counts).toBeDefined()
   })
 
-  it.each(['outline', 'search', 'read'])('checks Host visibility before native %s reads or locator lookup', async mode => {
+  it.each(['outline', 'search', 'read', 'calls'])('checks Host visibility before native %s reads or locator lookup', async mode => {
     const { ctx, lead, other } = await setup()
     vi.spyOn(ctx.sessionController, 'list').mockResolvedValueOnce({ items: [] })
     const read = vi.spyOn(ctx.sessionQuery, 'readEvent')
@@ -382,7 +577,17 @@ describe('native inspection interaction', () => {
     [{ mode: 'search', query: 'x', seq: 0 }, 'seq'],
     [{ mode: 'search', query: 'x', transcript: true }, 'transcript'],
     [{ mode: 'search', query: 'x', limit: 0 }, 'limit'],
-    [{ mode: 'outline', query: 'mixed' }, 'query']
+    [{ mode: 'outline', query: 'mixed' }, 'query'],
+    [{ mode: 'calls', query: 'mixed' }, 'query'],
+    [{ mode: 'calls', seq: 0 }, 'seq'],
+    [{ mode: 'calls', limit: 0 }, 'limit'],
+    [{ mode: 'calls', from_seq: -1 }, 'from_seq'],
+    [{ mode: 'calls', until_seq: 1.5 }, 'until_seq'],
+    [{ mode: 'calls', until_seq: Number.MAX_SAFE_INTEGER + 1 }, 'until_seq'],
+    [{ mode: 'calls', from_seq: 2, until_seq: 1 }, 'from_seq'],
+    [{ mode: 'calls', errors_only: 'yes' }, 'errors_only'],
+    [{ mode: 'search', query: 'x', from_seq: 0 }, 'from_seq'],
+    [{ mode: 'outline', errors_only: true }, 'errors_only']
   ])('rejects an invalid mode combination %j', async (args, message) => {
     const { ctx, lead, other } = await setup()
     expectToolError(await execute(ctx, lead, 'inspect_session', { session_id: other.id, ...args }), message)
@@ -473,7 +678,7 @@ describe('session-fleet tools', () => {
     expect(readFileSync(outline.transcriptPath, 'utf8')).toContain(long)
   })
 
-  it.each(['outline', 'search', 'read'])('refuses subagent sessions in %s mode before native access', async mode => {
+  it.each(['outline', 'search', 'read', 'calls'])('refuses subagent sessions in %s mode before native access', async mode => {
     const { ctx, lead, other } = await setup()
     const rows = await ctx.sessionController.list({}, SIGNAL)
     vi.spyOn(ctx.sessionController, 'list').mockResolvedValueOnce({ items: rows.items.map(row => (row.sessionId === other.id ? { ...row, origin: 'subagent' } : row)) })
@@ -556,6 +761,7 @@ describe('session-fleet tools', () => {
     const prompt = renderPrompt(assembly)
     expect(prompt).toContain('peer-agent input')
     expect(prompt).toContain('untrusted peer input')
+    expect(prompt).toContain('Recorded workspace cwd: ' + JSON.stringify(lead.session.header.cwd))
 
     await fleetFiber.dispose()
     expect(ctx.tools.get('list_sessions', scope)).toBeUndefined()
