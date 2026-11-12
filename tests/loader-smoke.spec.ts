@@ -178,6 +178,25 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
       },
       options => {
         capture(options)
+        return toolCallResponse('native-calls', 'inspect_session', { session_id: 'fleet-native-reader', mode: 'calls', limit: 1 })
+      },
+      options => {
+        const page = capture(options)
+        expect(page.counts).toEqual({ outer: 3, nested: 0, failed: 0, pending: 0 })
+        expect(page.calls).toHaveLength(1)
+        expect(page.calls[0].status).toBe('succeeded')
+        expect(page.next.arguments.until_seq).toBe(page.asOfSeq)
+        return toolCallResponse('native-calls-next', page.next.tool, page.next.arguments)
+      },
+      options => {
+        const page = capture(options)
+        expect(page.counts.outer).toBe(3)
+        expect(page.total).toBe(3)
+        expect(page.detailAccess.read.arguments.seq).toBe(page.calls[0].resultSeq)
+        return toolCallResponse('native-call-result', page.detailAccess.read.tool, page.detailAccess.read.arguments)
+      },
+      options => {
+        expect(capture(options).event.type).toBe('tool/result')
         return textResponse('native detail verified')
       }
     ])
@@ -185,7 +204,7 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   const reader = await ctx.agentLoop.create(SessionId('fleet-native-reader'), { provider: 'fleet-native-details', model: 'mock' }, { cwd: workspace.path })
   reader.followup(createUserMessage({ content: [{ type: 'text', text: 'Inspect the selected archived session and read its matching original event.' }], source: { kind: 'user' } }))
   await reader.whenIdle()
-  expect(nativeSteps.map(text => JSON.parse(text).mode)).toEqual(['outline', 'search', 'read'])
+  expect(nativeSteps.map(text => JSON.parse(text).mode)).toEqual(['outline', 'search', 'read', 'calls', 'calls', 'read'])
   const readEvent = JSON.parse(nativeSteps[2]!).event
   expect(readEvent).toEqual(original.snapshotEvents().find(event => event.seq === readEvent.seq))
   expect(readEvent.data.content.some((block: { text?: string }) => block.text === 'loader smoke message')).toBe(true)

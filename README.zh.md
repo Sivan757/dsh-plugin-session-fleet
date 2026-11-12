@@ -22,7 +22,7 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 - `list_sessions`：列出可见会话及状态、活跃时间与工作目录，不会激活任何目标。可选 `query` 按标题做不区分大小写的字面子串匹配，接受 1–500 个 UTF-16 代码单元，不依赖全文索引。默认数量取 20 与 `maxListRows` 的较小值；`hiddenSubagentSessions` 只统计所有权隐藏，与 cwd 过滤无关。
 - `search_sessions`：先限定 Host 允许访问的会话，再搜索有索引的当前用户与助手消息。全文搜索被停用时，错误提供 `list_sessions` 标题查询示例。支持 `cwd`、ISO 8601 时间 `after`/`before`、`limit` 和 `cursor`；命中包含有界片段、事件 `seq`、目录、状态、活跃时间及已有标题提示。
-- `inspect_session` 默认 `mode: "outline"`，返回截断概览、宿主可提供的原始 `source.location` 和可执行的 `detailAccess` 示例。用 `mode: "search"` 与 `query` 查询会话内事件，再用 `mode: "read"` 与 `seq` 读取完整解码事件及有界相邻摘要。原有私有文本投影仅在概览模式显式传 `transcript: true` 时导出。
+- `inspect_session` 默认 `mode: "outline"`，返回截断概览、宿主可提供的原始 `source.location` 和可执行的 `detailAccess` 示例。用 `mode: "search"` 与 `query` 查询会话内事件，再用 `mode: "read"` 与 `seq` 读取完整解码事件及有界相邻摘要。用 `mode: "calls"` 在不加载正文的情况下定位工具输入、结果和失败项。原有私有文本投影仅在概览模式显式传 `transcript: true` 时导出。
 - `create_session`：接受显式 `cwd` 或 `workspace_id`，两者互斥。只有两者都省略时才继承调用者 workspace，找不到时使用调用者记录的工作目录。
 - `send_to_session`：经 DSH 队列投递对等输入，返回稳定 `messageId`、`accepted`、`persistence`（`acknowledged` 或 `unknown`）及 `retrySafe: false`。接受不代表处理完成。flush 未确认或失败时仍可能已经送达，因此返回带检查提示的未知收据。入队异常也会在错误中提供消息 ID 并明确结果未知。
 
@@ -35,6 +35,10 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 1. 调用 `inspect_session({ session_id })` 读取概览，计数覆盖原始用户、助手与工具调用事件。`recentPrompts` 只列人类（`user`）和 Fleet 对等输入（`session-fleet`），注入上下文与协调通知不会挤占它们。`lastAssistant` 指向最近一条非空的文本回复，`asOfSeq` 标明所取日志的边界。输入至多 200 个 UTF-16 代码单元，回复至多 300 个，并保留截断标识。
 2. 在 `detailAccess.search.arguments` 中补充关键词，再调用给出的工具。搜索接受 `query`（1–500 个 UTF-16 代码单元）和 `limit`（默认取 20 与 `maxListRows` 的较小值）。命中返回 `seq`、类型、时间、视图与至多 240 个 UTF-16 代码单元的片段。`hasMore` 为 true 时缩小条件，此模式不暴露 provider 游标。查询调用者自身会话时排除当前活动 step。
 3. 执行 `detailAccess.read.arguments`，或将其中 `seq` 替换成命中序号。`before` 与 `after` 默认 2，范围 0–10。目标 `event` 保留完整原生 JSON，包括工具结果与其他事件类型。`context` 只含相邻事件的元信息与至多 300 个 UTF-16 代码单元的预览，不重复目标。`startSeq` 与 `endSeq` 标明观察到的窗口。空会话或搜索无命中时不提供读取示例。
+
+分析工具调用时，执行 `detailAccess.calls`，或调用 `inspect_session({ session_id, mode: "calls", errors_only: true })`。清单区分外层调用与嵌套 PTC 分发，提供输入 `seq`、可选的 `resultSeq` 和 `parentSeq`、工具名、状态，以及开始和结果成功配对时的耗时。外层程序成功仍可能包含失败的嵌套调用。工具名超过 160 个 UTF-16 代码单元时带 `nameTruncated: true`，完整正文通过读取模式取得。
+
+调用清单接受 `limit`（默认取 20 与 `maxListRows` 的较小值）、包含起点的 `from_seq`（默认 0）和可选 `until_seq`。执行返回的 `next` 动作继续分页，它将 `asOfSeq` 固定为后续页的取证边界，包括在该边界仍未完成的调用。`counts` 统计这一前缀内全部外层、嵌套、失败和未完成调用，`total` 统计分页前符合 `errors_only` 的调用数。检查自身会话时排除当前活动 step。此模式使用原生快照，不依赖全文索引。
 
 每种模式都在原生访问前检查当前 Host 可见性与子会话策略。结果用 `mode` 区分，混入其他模式的参数会报错。原生事件是历史数据，不是待执行指令。
 

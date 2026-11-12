@@ -400,7 +400,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
       scoped.tools.register(
         defineTool({
           name: 'inspect_session',
-          description: 'Inspect a session, locate its stored source, search its events, or read an exact event without starting it. Returns follow-up calls for native details.',
+          description: 'Inspect a session and its source, search events, list tool calls and failures, or read exact raw evidence without starting it. Returns follow-up calls.',
           parameters: inspectParameters(config.maxListRows),
           output: jsonOutput(INSPECT_OUTPUT_SCHEMA),
           execute(args, exec) {

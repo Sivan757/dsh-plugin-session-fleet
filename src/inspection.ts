@@ -7,6 +7,7 @@ import type { InferValue } from '@deepseek-ai/dsh-tools'
 import type { SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
 import { TRANSCRIPT_EVENT_TYPES, type TranscriptStore } from './transcript.ts'
 import { literalQuery } from './discovery.ts'
+import { CALL_ROW_SCHEMA, toolCallPage } from './calls.ts'
 import { SessionQueryError, buildSessionEventSearchDocuments, compileSessionTextFilter, filterSessionEventDocuments } from '@deepseek-ai/dsh-session-query'
 
 const INSPECT_MESSAGE_SCHEMA = {
@@ -72,7 +73,11 @@ const ACTION_SCHEMA = {
       additionalProperties: false,
       properties: {
         session_id: { type: 'string', required: true },
-        mode: { type: 'string', required: true, enum: ['search', 'read'] },
+        mode: { type: 'string', required: true, enum: ['search', 'read', 'calls'] },
+        from_seq: { type: 'integer' },
+        until_seq: { type: 'integer' },
+        errors_only: { type: 'boolean' },
+        limit: { type: 'integer' },
         seq: { type: 'integer' },
         before: { type: 'integer' },
         after: { type: 'integer' }
@@ -85,7 +90,7 @@ const DETAIL_ACCESS_SCHEMA = {
   type: 'object',
   required: true,
   additionalProperties: false,
-  properties: { search: { ...ACTION_SCHEMA, required: true }, read: ACTION_SCHEMA }
+  properties: { search: { ...ACTION_SCHEMA, required: true }, calls: { ...ACTION_SCHEMA, required: true }, read: ACTION_SCHEMA }
 } as const
 const OUTLINE_SCHEMA = {
   ...INSPECT_VALUE_SCHEMA,
@@ -162,19 +167,48 @@ const READ_SCHEMA = {
     detailAccess: DETAIL_ACCESS_SCHEMA
   }
 } as const
+const CALLS_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    mode: { type: 'string', required: true, const: 'calls' },
+    sessionId: { type: 'string', required: true },
+    asOfSeq: { type: 'integer', required: true },
+    counts: {
+      type: 'object',
+      required: true,
+      additionalProperties: false,
+      properties: {
+        outer: { type: 'integer', required: true },
+        nested: { type: 'integer', required: true },
+        failed: { type: 'integer', required: true },
+        pending: { type: 'integer', required: true }
+      }
+    },
+    total: { type: 'integer', required: true },
+    calls: { type: 'array', required: true, items: CALL_ROW_SCHEMA },
+    hasMore: { type: 'boolean', required: true },
+    next: ACTION_SCHEMA,
+    detailAccess: DETAIL_ACCESS_SCHEMA
+  }
+} as const
+
 /** Discriminated results retain the existing outline fields. */
-export const INSPECT_OUTPUT_SCHEMA = { oneOf: [OUTLINE_SCHEMA, SEARCH_SCHEMA, READ_SCHEMA] } as const
+export const INSPECT_OUTPUT_SCHEMA = { oneOf: [OUTLINE_SCHEMA, SEARCH_SCHEMA, READ_SCHEMA, CALLS_SCHEMA] } as const
 
 /** Flat arguments keep native lookup selectors explicit to the model. */
 export interface InspectArgs {
   session_id: string
-  mode?: 'outline' | 'search' | 'read'
+  mode?: 'outline' | 'search' | 'read' | 'calls'
   transcript?: boolean
   query?: string
   limit?: number
   seq?: number
   before?: number
   after?: number
+  from_seq?: number
+  until_seq?: number
+  errors_only?: boolean
 }
 interface InspectionConfig {
   includeSubagents: boolean
@@ -188,16 +222,22 @@ export function inspectParameters(maxRows: number) {
     session_id: { type: 'string', required: true, description: 'Session id from list_sessions or search_sessions.' },
     mode: {
       type: 'string',
-      enum: ['outline', 'search', 'read'],
-      description: 'Defaults to outline. Use search to find session events. Use read for one complete decoded event and neighboring summaries.'
+      enum: ['outline', 'search', 'read', 'calls'],
+      description: 'Defaults to outline. Use calls for tool inputs, results and failures, search to find events, or read for one complete raw event.'
     },
     transcript: { type: 'boolean', description: 'Only for outline: generate a bounded private text projection for grep. Defaults to false.' },
     query: { type: 'string', description: 'Required for search: word or phrase, 1–500 UTF-16 code units. Uses native literal matching when the full-text index is disabled.' },
     limit: {
       type: 'integer',
-      description: 'Only for search: maximum hits, 1 through ' + maxRows + '. Defaults to the smaller of 20 and that maximum. Narrow the query if hasMore is true.'
+      description:
+        'Only for search or calls: maximum rows, 1 through ' +
+        maxRows +
+        '. Defaults to the smaller of 20 and that maximum. Follow next for calls; narrow search queries when hasMore is true.'
     },
-    seq: { type: 'integer', description: 'Required for read: nonnegative event sequence from a search hit or outline.' },
+    from_seq: { type: 'integer', description: 'Only for calls: inclusive starting call-event sequence. Defaults to 0; follow next for continuation.' },
+    until_seq: { type: 'integer', description: 'Only for calls: inclusive capture boundary. Defaults to the observed end; next preserves it across pages.' },
+    errors_only: { type: 'boolean', description: 'Only for calls: return failed outer and nested calls. Defaults to false. Counts always cover the captured prefix.' },
+    seq: { type: 'integer', description: 'Required for read: nonnegative event sequence from a search hit, call row, or outline.' },
     before: { type: 'integer', description: 'Only for read: preceding event summaries, 0–10. Defaults to 2.' },
     after: { type: 'integer', description: 'Only for read: following event summaries, 0–10. Defaults to 2.' }
   } as const
@@ -265,6 +305,7 @@ function messageRow(event: SessionEvent, max: number): InferValue<typeof INSPECT
 function detailAccess(sessionId: string, seq?: number): InferValue<typeof DETAIL_ACCESS_SCHEMA> {
   return {
     search: { tool: 'inspect_session', arguments: { session_id: sessionId, mode: 'search' }, requiredArguments: ['query'] },
+    calls: { tool: 'inspect_session', arguments: { session_id: sessionId, mode: 'calls' }, requiredArguments: [] },
     ...(seq === undefined
       ? {}
       : { read: { tool: 'inspect_session' as const, arguments: { session_id: sessionId, mode: 'read' as const, seq, before: 2, after: 2 }, requiredArguments: [] } })
@@ -310,12 +351,22 @@ async function sourceInfo(
 
 function validate(args: InspectArgs, maxRows: number): void {
   const mode = args.mode ?? 'outline'
-  const allowed = mode === 'outline' ? ['transcript'] : mode === 'search' ? ['query', 'limit'] : ['seq', 'before', 'after']
-  for (const key of ['transcript', 'query', 'limit', 'seq', 'before', 'after'] as const) {
+  const allowed: readonly string[] = {
+    outline: ['transcript'],
+    search: ['query', 'limit'],
+    read: ['seq', 'before', 'after'],
+    calls: ['limit', 'from_seq', 'until_seq', 'errors_only']
+  }[mode]
+  for (const key of ['transcript', 'query', 'limit', 'seq', 'before', 'after', 'from_seq', 'until_seq', 'errors_only'] as const) {
     if (args[key] !== undefined && !allowed.includes(key)) throw new Error(key + ' is not valid in ' + mode + ' mode')
   }
-  if (mode === 'search') {
-    literalQuery(args.query ?? '')
+  if (mode === 'search') literalQuery(args.query ?? '')
+  if (mode === 'calls') {
+    for (const key of ['from_seq', 'until_seq'] as const)
+      if (args[key] !== undefined && (!Number.isSafeInteger(args[key]) || args[key] < 0)) throw new Error(key + ' must be a nonnegative safe integer')
+    if (args.from_seq !== undefined && args.until_seq !== undefined && args.from_seq > args.until_seq) throw new Error('from_seq must not exceed until_seq')
+  }
+  if (mode === 'search' || mode === 'calls') {
     if (args.limit !== undefined && (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > maxRows))
       throw new Error('limit must be an integer from 1 through ' + maxRows)
   }
@@ -406,6 +457,36 @@ export async function inspectSession(
   signal.throwIfAborted()
   const { session: meta, events } = snapshot
   assertHeader(meta.id, meta.origin, args.session_id, config.includeSubagents)
+  if (mode === 'calls') {
+    const limit = args.limit ?? Math.min(20, config.maxListRows)
+    const page = toolCallPage(events, { ...args, limit, excludeActiveStep: sessionId === caller.id })
+    return {
+      mode,
+      sessionId,
+      asOfSeq: page.asOfSeq,
+      counts: page.counts,
+      total: page.total,
+      calls: page.calls,
+      hasMore: page.hasMore,
+      ...(page.nextSeq === undefined
+        ? {}
+        : {
+            next: {
+              tool: 'inspect_session' as const,
+              arguments: {
+                session_id: sessionId,
+                mode: 'calls' as const,
+                from_seq: page.nextSeq,
+                until_seq: page.asOfSeq,
+                limit,
+                ...(args.errors_only === undefined ? {} : { errors_only: args.errors_only })
+              },
+              requiredArguments: []
+            }
+          }),
+      detailAccess: detailAccess(sessionId, page.calls[0]?.resultSeq ?? page.calls[0]?.seq)
+    }
+  }
   const counts = { user: 0, assistant: 0, toolCalls: 0 }
   const promptEvents: SessionEvent[] = []
   let assistantEvent: SessionEvent | undefined
