@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.4.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.3.0...dsh-plugin-session-fleet-v0.4.0) (2026-11-12)
+
+
+### Features
+
+* coordinate scoped work with structured peer messages ([67ffac9](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/67ffac9a3515062ba3f3938ce15601903a9a6044))
+* improve session retrieval and coordinated work ([2dcdd37](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/2dcdd37150800166c5f6a2280d05ca4dceb64afb))
+* navigate native tool calls and failures ([a6fd33e](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/a6fd33e44892a94d617cd6bbdd067b0bf124f713))
+* retrieve session evidence without a full-text index ([81e4e7f](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/81e4e7fcc5c0a97683ba0246ff874e43026b3470))
+
+
+### Bug Fixes
+
+* distinguish recorded workspace from command cwd ([a722d9c](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/a722d9cb715a62adf709eecf3be8456d0844a05e))
+
 ## [0.3.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.2.2...dsh-plugin-session-fleet-v0.3.0) (2026-11-11)
 
 ### Upgrade notes
