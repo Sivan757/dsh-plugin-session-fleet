@@ -34,7 +34,7 @@ A delivery carries the dedicated `session-fleet` message source and a peer-agent
 
 ## Proactive coordination
 
-The per-agent policy prompts discovery before shared writes, exclusive-resource use or expensive overlapping work. It rechecks changed scope, owner or dependencies, conflicts and handoffs. Independent short reads do not require a scan or broadcast. Within a native Team, use its task and ownership tools.
+The per-agent policy prompts discovery before shared writes, exclusive-resource use or expensive overlapping work. It rechecks changed scope, owner or dependencies, conflicts and handoffs. Independent short reads do not require a scan or broadcast. Discovery and cross-workspace authorization use recorded session cwd, which may differ from command cwd. The policy supplies that recorded directory; an empty cwd listing does not exclude related tasks or shared resources elsewhere. Within a native Team, use its task and ownership tools.
 
 For coordination, `send_to_session.message` also accepts a structured object. Plain strings remain supported. TypeScript consumers can import `CoordinationRecord` for the native message source metadata. The minimal handshake is `propose → accept` or `block`. A proposal names one `task`, explicit `owner`, 1–16 exact `scope` identities with access mode, a short `summary`, and the `next` decision/checkpoint. For example:
 
