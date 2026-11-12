@@ -553,7 +553,7 @@ describe('native inspection interaction', () => {
     expect(outline.counts).toBeDefined()
   })
 
-  it.each(['outline', 'search', 'read'])('checks Host visibility before native %s reads or locator lookup', async mode => {
+  it.each(['outline', 'search', 'read', 'calls'])('checks Host visibility before native %s reads or locator lookup', async mode => {
     const { ctx, lead, other } = await setup()
     vi.spyOn(ctx.sessionController, 'list').mockResolvedValueOnce({ items: [] })
     const read = vi.spyOn(ctx.sessionQuery, 'readEvent')
@@ -577,7 +577,17 @@ describe('native inspection interaction', () => {
     [{ mode: 'search', query: 'x', seq: 0 }, 'seq'],
     [{ mode: 'search', query: 'x', transcript: true }, 'transcript'],
     [{ mode: 'search', query: 'x', limit: 0 }, 'limit'],
-    [{ mode: 'outline', query: 'mixed' }, 'query']
+    [{ mode: 'outline', query: 'mixed' }, 'query'],
+    [{ mode: 'calls', query: 'mixed' }, 'query'],
+    [{ mode: 'calls', seq: 0 }, 'seq'],
+    [{ mode: 'calls', limit: 0 }, 'limit'],
+    [{ mode: 'calls', from_seq: -1 }, 'from_seq'],
+    [{ mode: 'calls', until_seq: 1.5 }, 'until_seq'],
+    [{ mode: 'calls', until_seq: Number.MAX_SAFE_INTEGER + 1 }, 'until_seq'],
+    [{ mode: 'calls', from_seq: 2, until_seq: 1 }, 'from_seq'],
+    [{ mode: 'calls', errors_only: 'yes' }, 'errors_only'],
+    [{ mode: 'search', query: 'x', from_seq: 0 }, 'from_seq'],
+    [{ mode: 'outline', errors_only: true }, 'errors_only']
   ])('rejects an invalid mode combination %j', async (args, message) => {
     const { ctx, lead, other } = await setup()
     expectToolError(await execute(ctx, lead, 'inspect_session', { session_id: other.id, ...args }), message)
@@ -668,7 +678,7 @@ describe('session-fleet tools', () => {
     expect(readFileSync(outline.transcriptPath, 'utf8')).toContain(long)
   })
 
-  it.each(['outline', 'search', 'read'])('refuses subagent sessions in %s mode before native access', async mode => {
+  it.each(['outline', 'search', 'read', 'calls'])('refuses subagent sessions in %s mode before native access', async mode => {
     const { ctx, lead, other } = await setup()
     const rows = await ctx.sessionController.list({}, SIGNAL)
     vi.spyOn(ctx.sessionController, 'list').mockResolvedValueOnce({ items: rows.items.map(row => (row.sessionId === other.id ? { ...row, origin: 'subagent' } : row)) })

@@ -37,4 +37,4 @@ Every host pin carries the support window `>=0.2.0-rc.2 <0.3.0-0`; only `devDepe
 
 ## Deliver each optimization
 
-After each functional optimization, build the bundle and connect it to the current DSH profile. Use Plugin Manager for profile changes, or verify the existing local source link. Query the live tool catalog and exercise the changed capability through real calls before reporting it ready. Package versions alone do not identify the loaded code generation. Record the observed result and notify the user with a concrete prompt they can try.
+After each functional optimization, build the bundle and connect it to the current DSH profile. Use Plugin Manager for profile changes, or verify the existing local source link. Query the live tool catalog and exercise the changed capability through real calls before reporting it ready. Package versions alone do not identify the loaded code generation. If a linked checkout still exposes the old catalog after building, follow Plugin Manager’s remount or restart instructions and verify again before reporting it ready. Record the observed result and notify the user with a concrete prompt they can try.
