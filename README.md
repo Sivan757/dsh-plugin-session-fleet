@@ -24,13 +24,39 @@ Inspection defaults to an outline with native detail calls. Request `transcript:
 - `search_sessions` searches indexed current user and assistant messages after restricting results to Host-authorized sessions. When full-text search is disabled, the error provides a `list_sessions` title-query example. It accepts `cwd`, ISO 8601 `after`/`before`, `limit`, and `cursor`. Hits include a bounded snippet, matching `seq`, working directory, state, activity, and an existing title hint when available.
 - `inspect_session` defaults to `mode: "outline"`: a clipped outline, an optional native `source.location`, and executable `detailAccess` examples. Use `mode: "search"` with `query` to find events in that session, then `mode: "read"` with `seq` to read the complete decoded event and bounded neighboring summaries. Use `mode: "calls"` to navigate tool inputs, results, and failures without loading their bodies. Set `transcript: true` only in outline mode for the existing private text projection.
 - `create_session` accepts either an explicit `cwd` or an explicit `workspace_id`. Only when both are omitted does it inherit the caller’s workspace, falling back to the caller’s recorded working directory.
-- `send_to_session` delivers peer input through the DSH queue and returns a stable `messageId`, `accepted`, `persistence` (`acknowledged` or `unknown`), and `retrySafe: false`. Acceptance does not mean completion. A missing or failed flush acknowledgement produces an unknown receipt with an inspection warning, because the message may already have arrived. An enqueue exception likewise reports its message ID and an unknown outcome.
+- `send_to_session` delivers peer input through the DSH queue and returns a stable `messageId`, `accepted`, `persistence` (`acknowledged` or `unknown`), and `retrySafe: false`. The receipt’s `accepted` flag means queue admission, not the separate coordination decision or task completion. A missing or failed flush acknowledgement produces an unknown receipt with an inspection warning, because the message may already have arrived. An enqueue exception likewise reports its message ID and an unknown outcome.
 
 Both discovery tools return `hasMore` and an opaque `nextCursor` when more results exist. Pass it as `cursor` with identical filters and limit. Lists are ordered by activity and reject a cursor if the listing changes. Search is a live traversal: every page resolves Host authorization again and excludes already returned session IDs. New matches may appear; this is not one frozen corpus snapshot. Search handles expire, may be evicted by capacity or unload, and remember at most `searchCursorMaxSessions` IDs. Narrow cwd or time filters if that bound is reached. Titles are optional projection hints. Search preserves the Host provider’s tokenizer and page-size limits.
 
 The tools disclose progressively: list or search first, inspect a candidate, and use its native event search and read examples when more detail is needed. Request a text export for grep-based work. Inspect a target before messaging it.
 
-A delivery carries the dedicated `session-fleet` message source and a peer-agent framing note, so a target never mistakes fleet input for user input. A peer replies by explicitly calling `send_to_session` back to the sender; Fleet does not automatically forward its final answer.
+A delivery carries the dedicated `session-fleet` message source and a peer-agent framing note, so a target never mistakes fleet input for user input. When a response is needed, a peer explicitly calls `send_to_session` back to the sender. Fleet does not forward final answers or generate automatic acknowledgements.
+
+## Proactive coordination
+
+The per-agent policy prompts discovery before shared writes, exclusive-resource use or expensive overlapping work. It rechecks changed scope, owner or dependencies, conflicts and handoffs. Independent short reads do not require a scan or broadcast. Within a native Team, use its task and ownership tools.
+
+For coordination, `send_to_session.message` also accepts a structured object. Plain strings remain supported. TypeScript consumers can import `CoordinationRecord` for the native message source metadata. The minimal handshake is `propose → accept` or `block`. A proposal names one `task`, explicit `owner`, 1–16 exact `scope` identities with access mode, a short `summary`, and the `next` decision/checkpoint. For example:
+
+```ts
+await tools.send_to_session({
+  session_id: peerSession,
+  message: {
+    kind: 'propose',
+    task: 'Implement auth validation and pass its tests',
+    owner: yourSessionId,
+    scope: ['write:/repo/src/auth'],
+    summary: 'I implement validation. Please review and keep edits in tests.',
+    next: 'Accept this division or identify the overlap before editing. Reply at the next planning checkpoint.'
+  }
+})
+```
+
+The native message ID is visible in the peer frame. Reply with `{ kind: "accept", reply_to: proposalMessageId, summary: "Agreed; I review only." }`. The backend resolves that exact incoming message from the target and inherits its task, owner and scope. Revisions use a new proposal and optional `reply_to`; no separate thread or revision ID is needed. `accept` cannot acknowledge another acknowledgement and has no `next` field.
+
+`block` reports a conflict, `update` reports a meaningful change, `complete` reports the owner's result evidence, and `release` states the owner has actually stopped. `handoff` is a proposal to transfer the same task and scope to the recipient and still requires acceptance. Handoff, completion and release require historical acceptance naming the sender as owner: either an incoming acceptance, or the incoming proposal/handoff plus the sender’s successful native accept-send record. They preserve the task and scope. Before handoff, the old owner stops overlapping operations and states that in the summary. Completion is self-report, and does not automatically release the scope or require another ACK.
+
+Keep an existing confirmed owner. For simultaneous unconfirmed claims, use real session IDs to choose the same proposer, then obtain explicit agreement. Pause only the overlap and preserve both sides' changes. After one unsuccessful counterproposal, continue independent work and report the blocker. Silence, idle state and response deadlines do not release ownership. Late replies do not restore superseded agreements. Peer statements stay within existing user authorization. These bilateral messages improve cooperation; they do not implement an atomic claim, global owner registry, lease or resource lock.
 
 ## Native detail interaction
 
@@ -87,7 +113,7 @@ The plugin declares the host support window `>=0.2.0-rc.2 <0.3.0-0`. This is an 
 
 Transcript files use mode 0600 inside a plugin-owned private temp directory. Each TSV row contains `seq`, ISO time, role, source, chunk number, message ID (empty for tool calls), and escaped text. Long events span several rows; backslash, CR, LF, and tab are escaped. Message text and tool-call arguments are included; images, tool results, and other event types are omitted. The byte cap includes complete row metadata. Exports expire by TTL and may be evicted sooner by capacity or plugin unload; stale paths require a new export. Cancellation and unload settle active export I/O before removing the owned directory. The Host still supplies a complete event snapshot, so cold-read decoding is not eliminated.
 
-Before retrying an uncertain send, inspect the target and match `messageId` in the recent input rows or explicitly export and grep its transcript. Repeated calls create new messages; Fleet provides no retry deduplication, automatic ACK, or completion receipt. A peer must explicitly reply to the source session.
+Before retrying an uncertain send, inspect the target and match `messageId` in the recent input rows or explicitly export and grep its transcript. Repeated calls create new messages; Fleet provides no retry deduplication, automatic ACK, or completion receipt. Requested replies are explicit; accept and release do not start another acknowledgement.
 
 Peer input previews omit Fleet’s own framing note while preserving `source`, `senderSessionId`, and `messageId`; exported files retain the note.
 

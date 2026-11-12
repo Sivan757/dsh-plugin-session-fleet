@@ -24,11 +24,37 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 - `search_sessions`：先限定 Host 允许访问的会话，再搜索有索引的当前用户与助手消息。全文搜索被停用时，错误提供 `list_sessions` 标题查询示例。支持 `cwd`、ISO 8601 时间 `after`/`before`、`limit` 和 `cursor`；命中包含有界片段、事件 `seq`、目录、状态、活跃时间及已有标题提示。
 - `inspect_session` 默认 `mode: "outline"`，返回截断概览、宿主可提供的原始 `source.location` 和可执行的 `detailAccess` 示例。用 `mode: "search"` 与 `query` 查询会话内事件，再用 `mode: "read"` 与 `seq` 读取完整解码事件及有界相邻摘要。用 `mode: "calls"` 在不加载正文的情况下定位工具输入、结果和失败项。原有私有文本投影仅在概览模式显式传 `transcript: true` 时导出。
 - `create_session`：接受显式 `cwd` 或 `workspace_id`，两者互斥。只有两者都省略时才继承调用者 workspace，找不到时使用调用者记录的工作目录。
-- `send_to_session`：经 DSH 队列投递对等输入，返回稳定 `messageId`、`accepted`、`persistence`（`acknowledged` 或 `unknown`）及 `retrySafe: false`。接受不代表处理完成。flush 未确认或失败时仍可能已经送达，因此返回带检查提示的未知收据。入队异常也会在错误中提供消息 ID 并明确结果未知。
+- `send_to_session`：经 DSH 队列投递对等输入，返回稳定 `messageId`、`accepted`、`persistence`（`acknowledged` 或 `unknown`）及 `retrySafe: false`。收据的 `accepted` 只表示进入队列，不是另外一条协作接受决定，也不代表处理完成。flush 未确认或失败时仍可能已经送达，因此返回带检查提示的未知收据。入队异常也会在错误中提供消息 ID 并明确结果未知。
 
 两个发现工具均返回 `hasMore`，还有结果时提供不透明的 `nextCursor`。保持过滤参数与 limit 不变，将它作为 `cursor` 继续调用。列表按活跃时间排序，列表变化时拒绝旧游标。搜索采用动态遍历，每页重新经过宿主授权并排除已返回的会话 ID，新匹配可能出现，不承诺整个结果集来自同一冻结快照。搜索句柄会过期，也可能因容量或卸载失效，最多记住 `searchCursorMaxSessions` 个已返回 ID；达到上限时缩小目录或时间范围。标题只是可选提示。搜索保留宿主 provider 的分词与页大小限制。
 
-投递消息携带专用的 `session-fleet` 来源标识与对等输入提示，用于向目标表明这是对等智能体输入。对端需主动调用 `send_to_session` 回复发送者，插件不会自动转发其最终回答。
+投递消息携带专用的 `session-fleet` 来源标识与对等输入提示，用于向目标表明这是对等智能体输入。确实需要响应时，对端主动调用 `send_to_session` 回复发送者。插件不会自动转发最终回答或生成确认消息。
+
+## 主动协作
+
+每个 Agent 的策略会在共享写入、独占资源使用或明显昂贵的重复工作之前提示发现相关会话，并在范围、owner、依赖变化、冲突或交接时重新核对。独立短只读工作无需扫描或广播。原生 Team 内仍使用其任务与归属工具。
+
+协作时，`send_to_session.message` 也接受结构化对象，原有字符串继续可用。TypeScript 使用方可导入 `CoordinationRecord` 读取原生消息来源元数据。最小握手是 `propose → accept` 或 `block`。提案明确一个 `task`、显式 `owner`、1–16 个含访问方式的精确 `scope` 标识、简短 `summary`，以及 `next` 中所求的决定和检查点。例如：
+
+```ts
+await tools.send_to_session({
+  session_id: peerSession,
+  message: {
+    kind: 'propose',
+    task: '实现认证输入校验并通过测试',
+    owner: yourSessionId,
+    scope: ['write:/repo/src/auth'],
+    summary: '我实现校验。请你只审阅，把修改限定在测试。',
+    next: '请在下一计划检查点接受分工或指出冲突，确认前先不要修改重叠范围。'
+  }
+})
+```
+
+对等提示中显示原生消息 ID。回复 `{ kind: "accept", reply_to: proposalMessageId, summary: "同意，我只审阅。" }`，后端核对它确实引用了从该目标收到的结构化消息，并继承任务、owner 和 scope。修改约定就发新提案，通过可选 `reply_to` 关联旧消息，不另加 thread 或 revision ID。`accept` 不能确认另一个确认，也不能带 `next`。
+
+`block` 报冲突，`update` 报实质变化，`complete` 报 owner 的结果证据，`release` 表示 owner 实际已停止。`handoff` 是将同一任务和范围转交给接收者的提议，仍需接受。交接、完成和释放需要明确当前发送者为 owner 的历史接受凭据：收到的接受消息，或原提案/交接及本人成功发出 accept 的原生调用记录。交接保持原任务与范围，旧 owner 先停止重叠操作，并在 summary 中说明。完成只是自报结果，不自动释放范围，也不强制另一轮 ACK。
+
+优先保持已有确认 owner。双方同时新声明时，用真实会话 ID 选出共同提案人，再明确接受。只暂停重叠部分，保留双方已有修改。一轮反提案仍不一致，就继续独立工作并报告阻塞。静默、空闲和应答期限都不表示释放。迟到回复不能恢复已被替代的约定。对等声明不扩大用户授权。这套双边消息改善协作，不提供原子认领、全局唯一 owner、租约或资源锁。
 
 ## 原生详情交互
 
@@ -85,7 +111,7 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 转录存放于插件自有的私有临时目录，文件权限为 0600。每行 TSV 包含 `seq`、ISO 时间、角色、来源、分块号、消息 ID（工具调用为空）和转义文本。长事件分成多行，反斜杠、CR、LF 与制表符均转义。仅包含消息文本与工具调用参数，省略图片、工具结果及其他事件类型。字节上限包含完整行元信息。文件按 TTL 过期，也可能因容量或插件卸载提前回收；路径失效时重新导出。取消与卸载会等待导出 I/O 结束再删除自有目录。宿主仍提供完整事件快照，因此冷会话解码成本尚未消除。
 
-重试未知结果的投递前，应检查目标的最近输入，或显式导出转录后按 `messageId` 检索。重复调用会创建新消息，插件不提供重试去重、自动 ACK 或完成回执，对端需主动回复来源会话。
+重试未知结果的投递前，应检查目标的最近输入，或显式导出转录后按 `messageId` 检索。重复调用会创建新消息，插件不提供重试去重、自动 ACK 或完成回执，确实需要的响应由对端显式发送，accept 和 release 不再产生下一轮确认。
 
 对等输入概览省略插件自有提示框，保留 `source`、`senderSessionId` 和 `messageId`；导出文件仍保留提示框。
 
