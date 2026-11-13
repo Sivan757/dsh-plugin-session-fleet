@@ -15,6 +15,7 @@ import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
 import SessionQuery from '@deepseek-ai/dsh-session-query-sqlite'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -25,6 +26,7 @@ import * as yaml from 'js-yaml'
 import { jsonlPersistencePlugin } from '../testkit/jsonl-persistence.ts'
 import { MockAdapter, textResponse, toolCallResponse } from '../testkit/mock-adapter.ts'
 import * as fleet from '../src/index.ts'
+import { pendingRevision, refreshPendingPreviews } from '../src/inbox.ts'
 
 const cleanups: Array<() => Promise<void>> = []
 afterEach(async () => {
@@ -85,11 +87,12 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   const caller = ctx.agents.get(created.sessionId)!
   expect(workspace.sessionIds).toContain(caller.id)
   let call = 0
-  const execute = async (name: string, args: unknown) => {
-    const result = await ctx.tools.execute({ callId: ToolCallId('smoke-' + ++call), name, arguments: args, signal: new AbortController().signal, agent: caller })
+  const execute = async (name: string, args: unknown, agent = caller, expectError = false) => {
+    const result = await ctx.tools.execute({ callId: ToolCallId('smoke-' + ++call), name, arguments: args, signal: new AbortController().signal, agent })
     const text = result.content.flatMap(block => (block.type === 'text' ? [block.text] : [])).join('')
-    expect(result.isError, text).not.toBe(true)
-    return JSON.parse(text)
+    if (expectError) expect(result.isError, text).toBe(true)
+    else expect(result.isError, text).not.toBe(true)
+    return expectError ? { error: text } : JSON.parse(text)
   }
   const explicit = await execute('create_session', { cwd: explicitCwd })
   expect(ctx.agents.get(SessionId(explicit.sessionId))!.session.header.cwd).toBe(explicitCwd)
@@ -269,7 +272,8 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
         writes++
         return toolCallResponse('coord-complete', 'send_to_session', {
           session_id: reviewerId,
-          message: { kind: 'complete', reply_to: acceptanceId, summary: 'Validation complete; artifact is saved at the agreed path.' }
+          message: { kind: 'complete', reply_to: acceptanceId, summary: 'Validation complete; artifact is saved at the agreed path.' },
+          delivery: 'queue'
         })
       },
       () => textResponse('Completed the agreed scope.')
@@ -283,7 +287,8 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
         expect(proposed.contract.kind).toBe('propose')
         return toolCallResponse('coord-accept', 'send_to_session', {
           session_id: ownerId,
-          message: { kind: 'accept', reply_to: proposed.id, summary: 'Agreed. I review only and leave the shared file to you.' }
+          message: { kind: 'accept', reply_to: proposed.id, summary: 'Agreed. I review only and leave the shared file to you.' },
+          delivery: 'queue'
         })
       },
       () => textResponse('Accepted the scope; no further acknowledgement is needed.'),
@@ -368,6 +373,241 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   )
   expect(receivedReplies.map(reply => reply?.kind)).toEqual(['accept', 'complete', 'handoff', 'release'])
   expect(receivedReplies[0]?.reply_to).toBe(assignment.messageId)
+  const workStarted = Promise.withResolvers<void>()
+  const workCanFinish = Promise.withResolvers<void>()
+  let heldSignal: AbortSignal | undefined
+  ctx.tools.register(
+    defineTool({
+      name: 'fleet_hold_work',
+      description: 'Hold one fixture tool until the test admits peer feedback.',
+      parameters: {},
+      output: { schema: { type: 'string' }, render: value => [{ type: 'text' as const, text: value }] },
+      async execute(_args, exec) {
+        heldSignal = exec.signal
+        workStarted.resolve()
+        await workCanFinish.promise
+        return 'work checkpoint reached'
+      }
+    })
+  )
+  const busyOwnerId = SessionId('coord-busy-owner')
+  const busyReviewerId = SessionId('coord-busy-reviewer')
+  let proposalForBusyOwner = ''
+  let observedFeedback: string[] = []
+  const busyReceipts: Array<{ delivery: string; accepted: boolean }> = []
+  ctx.llm.registerAdapter(
+    ['coord-busy-owner'],
+    new MockAdapter([
+      toolCallResponse('busy-work', 'fleet_hold_work', {}),
+      options => {
+        observedFeedback = options.messages.flatMap(message => (message.role === 'user' && message.source.kind === 'session-fleet' ? [message.source.coordination!.kind] : []))
+        return textResponse('Review feedback incorporated in the current turn.')
+      }
+    ])
+  )
+  ctx.llm.registerAdapter(
+    ['coord-busy-reviewer'],
+    new MockAdapter([
+      options => {
+        proposalForBusyOwner = receivedCoordination(options).id
+        return toolCallResponse('busy-accept', 'send_to_session', {
+          session_id: busyOwnerId,
+          message: { kind: 'accept', reply_to: proposalForBusyOwner, summary: 'I accept the independent review scope.' }
+        })
+      },
+      options => {
+        busyReceipts.push(JSON.parse(toolText(options)))
+        return toolCallResponse('busy-update', 'send_to_session', {
+          session_id: busyOwnerId,
+          message: {
+            kind: 'update',
+            reply_to: proposalForBusyOwner,
+            summary: 'One actionable finding for the current implementation.',
+            next: 'Apply the finding at the next work checkpoint.'
+          }
+        })
+      },
+      options => {
+        busyReceipts.push(JSON.parse(toolText(options)))
+        return toolCallResponse('busy-complete', 'send_to_session', {
+          session_id: busyOwnerId,
+          message: { kind: 'complete', reply_to: proposalForBusyOwner, summary: 'Review complete; apply the recorded finding.' }
+        })
+      },
+      options => {
+        busyReceipts.push(JSON.parse(toolText(options)))
+        return textResponse('Review finished without an acknowledgement loop.')
+      }
+    ])
+  )
+  const busyOwner = await ctx.agentLoop.create(busyOwnerId, { provider: 'coord-busy-owner', model: 'mock' }, { cwd: workspace.path })
+  const busyReviewer = await ctx.agentLoop.create(busyReviewerId, { provider: 'coord-busy-reviewer', model: 'mock' }, { cwd: workspace.path })
+  busyOwner.followup(createUserMessage({ content: [{ type: 'text', text: 'Continue the authorized work while an independent peer reviews.' }], source: { kind: 'user' } }))
+  try {
+    await workStarted.promise
+    await execute(
+      'send_to_session',
+      {
+        session_id: busyReviewerId,
+        message: {
+          kind: 'propose',
+          task: 'Review the in-progress artifact',
+          owner: busyReviewerId,
+          scope: ['read:' + sharedFile],
+          summary: 'Review this independent scope while I reach a work checkpoint.',
+          next: 'Accept, report findings and complete.'
+        }
+      },
+      busyOwner
+    )
+    await busyReviewer.whenIdle()
+    expect(busyReceipts).toEqual(Array.from({ length: 3 }, () => expect.objectContaining({ delivery: 'steer', accepted: true })))
+    expect(heldSignal?.aborted).toBe(false)
+    const pending = busyOwner.session
+      .snapshotEvents()
+      .filter(event => event.type === 'agent/inbox/spliced' && event.data.inserted?.some(item => item.source.kind === 'session-fleet'))
+    expect(pending.map(event => event.data.target)).toEqual(['next-step', 'next-step', 'next-step'])
+    expect(busyOwner.session.snapshotEvents().some(event => event.type === 'turn/end')).toBe(false)
+    const queuedNote = await execute('send_to_session', { session_id: busyOwnerId, message: 'status version one' }, busyReviewer)
+    const otherNote = await execute('send_to_session', { session_id: busyOwnerId, message: 'obsolete notification' }, busyReviewer)
+    const human = createUserMessage({ content: [{ type: 'text', text: 'Human work must survive.' }], source: { kind: 'user' } })
+    busyOwner.inbox.append('next-turn', human)
+    const oldPending = busyOwner.inbox.nextStep[0]!
+    const oldFrame = oldPending.content[0]!
+    if (oldFrame.type !== 'text') throw new Error('Expected peer framing')
+    const legacy = {
+      ...oldPending,
+      content: [
+        {
+          type: 'text' as const,
+          text:
+            oldFrame.text.slice(oldFrame.text.indexOf('<system-reminder>')) +
+            oldPending.content
+              .slice(1)
+              .flatMap(block => (block.type === 'text' ? [block.text] : []))
+              .join('')
+        }
+      ]
+    }
+    busyOwner.inbox.replace(oldPending.id, legacy)
+    expect(refreshPendingPreviews(busyOwner)).toBe(1)
+    expect(refreshPendingPreviews(busyOwner)).toBe(0)
+    expect(busyOwner.inbox.nextStep[0]!.id).toBe(oldPending.id)
+    expect(busyOwner.inbox.nextStep[0]!.source).toEqual(oldPending.source)
+    expect(busyOwner.inbox.nextStep[0]!.content.slice(1)).toEqual(oldPending.content.slice(1))
+    const resolveRead = vi.spyOn(ctx.sessionController, 'resolveAgent').mockClear()
+    const page = await execute('manage_session_inbox', { session_id: busyOwnerId })
+    expect(resolveRead).not.toHaveBeenCalled()
+    resolveRead.mockRestore()
+    expect(page).toMatchObject({ peerPending: 5, otherPending: 1, totalPending: 6 })
+    expect(page.items.find((item: { kind: string }) => item.kind === 'update')!.next).toBe('Apply the finding at the next work checkpoint.')
+    expect(page.items.every((item: { selfAddressed: boolean }) => !item.selfAddressed)).toBe(true)
+    const acceptedPending = page.items.find((item: { kind: string }) => item.kind === 'accept')!
+    expect(acceptedPending.completionMessageId).toBe(page.items.find((item: { kind: string }) => item.kind === 'complete')!.messageId)
+    const old = page.items.find((item: { messageId: string }) => item.messageId === queuedNote.messageId)!
+    expect(old.revision).toBe(queuedNote.revision)
+    const acceptedRevised = await execute(
+      'manage_session_inbox',
+      {
+        session_id: busyOwnerId,
+        action: 'replace',
+        message_id: acceptedPending.messageId,
+        expected_revision: acceptedPending.revision,
+        text: 'Accepted review scope; cumulative current status.'
+      },
+      busyReviewer
+    )
+    const acceptedNative = busyOwner.inbox.nextStep.find(message => message.id === acceptedRevised.messageId)!
+    expect(acceptedNative.source).toMatchObject({
+      kind: 'session-fleet',
+      senderSessionId: busyReviewerId,
+      coordination: { kind: 'accept', summary: 'Accepted review scope; cumulative current status.' }
+    })
+    const firstPage = await execute('manage_session_inbox', { session_id: busyOwnerId, limit: 1 })
+    expect(firstPage.hasMore).toBe(true)
+    const secondPage = await execute('manage_session_inbox', { session_id: busyOwnerId, limit: 1, cursor: firstPage.nextCursor })
+    expect(secondPage.items[0].messageId).not.toBe(firstPage.items[0].messageId)
+    const orderBefore = busyOwner.inbox.nextTurn.map(message => message.id)
+    const revised = await execute(
+      'manage_session_inbox',
+      { session_id: busyOwnerId, action: 'replace', message_id: old.messageId, expected_revision: old.revision, text: 'status version two' },
+      busyReviewer
+    )
+    expect(revised).toMatchObject({ changed: true, messageId: queuedNote.messageId, persistence: 'acknowledged' })
+    expect(revised.revision).not.toBe(old.revision)
+    expect(busyOwner.inbox.nextTurn.map(message => message.id)).toEqual(orderBefore)
+    const revisedMessage = busyOwner.inbox.nextTurn.find(message => message.id === queuedNote.messageId)!
+    expect(revisedMessage.source).toMatchObject({ kind: 'session-fleet', senderSessionId: busyReviewerId })
+    expect(revisedMessage.content[0]).toMatchObject({ text: expect.stringContaining('[Fleet message') })
+    expect(JSON.stringify(revisedMessage.content)).toContain('status version two')
+    expect(
+      (
+        await execute(
+          'manage_session_inbox',
+          { session_id: busyOwnerId, action: 'replace', message_id: old.messageId, expected_revision: old.revision, text: 'stale overwrite' },
+          busyReviewer,
+          true
+        )
+      ).error
+    ).toContain('changed')
+    expect((await execute('manage_session_inbox', { session_id: busyOwnerId, limit: 1, cursor: firstPage.nextCursor }, caller, true)).error).toContain('restart')
+    expect(
+      (
+        await execute(
+          'manage_session_inbox',
+          { session_id: busyOwnerId, action: 'replace', message_id: old.messageId, expected_revision: revised.revision, text: 'forged review' },
+          busyOwner,
+          true
+        )
+      ).error
+    ).toContain('Only the sender')
+    expect(
+      (await execute('manage_session_inbox', { session_id: busyOwnerId, action: 'withdraw', message_id: old.messageId, expected_revision: revised.revision }, caller, true)).error
+    ).toContain('sender or recipient')
+    expect(
+      (await execute('manage_session_inbox', { session_id: busyOwnerId, action: 'withdraw', message_id: human.id, expected_revision: pendingRevision(human) }, busyOwner, true))
+        .error
+    ).toContain('human input')
+    const consumed = await execute('manage_session_inbox', { session_id: busyOwnerId, message_id: otherNote.messageId }, busyOwner)
+    const removeDuringResolve = vi.spyOn(ctx.sessionController, 'resolveAgent').mockImplementationOnce(async () => {
+      busyOwner.inbox.remove(otherNote.messageId)
+      return { agent: busyOwner }
+    })
+    expect(
+      (
+        await execute(
+          'manage_session_inbox',
+          { session_id: busyOwnerId, action: 'withdraw', message_id: otherNote.messageId, expected_revision: consumed.items[0].revision },
+          busyReviewer,
+          true
+        )
+      ).error
+    ).toContain('no longer pending')
+    removeDuringResolve.mockRestore()
+    const withdrawn = await execute(
+      'manage_session_inbox',
+      { session_id: busyOwnerId, action: 'withdraw', message_id: old.messageId, expected_revision: revised.revision },
+      busyOwner
+    )
+    expect(withdrawn).toMatchObject({ action: 'withdraw', messageId: old.messageId, changed: true })
+    expect(
+      (await execute('manage_session_inbox', { session_id: busyOwnerId, action: 'withdraw', message_id: old.messageId, expected_revision: revised.revision }, busyReviewer, true))
+        .error
+    ).toContain('no longer pending')
+    expect(busyOwner.inbox.nextTurn).toEqual([human])
+    expect(
+      busyOwner.session
+        .snapshotEvents()
+        .some(event => event.type === 'agent/inbox/spliced' && event.data.inserted?.some(item => JSON.stringify(item.content).includes('status version one')))
+    ).toBe(true)
+    busyOwner.inbox.remove(human.id)
+  } finally {
+    workCanFinish.resolve()
+    await busyOwner.whenIdle()
+  }
+  expect(observedFeedback).toEqual(['accept', 'update', 'complete'])
+  expect(busyOwner.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(1)
+  expect(busyOwner.session.snapshotEvents().filter(event => event.type === 'user/message' && event.data.source.kind === 'session-fleet')).toHaveLength(3)
   await ctx.loader.resolve('fleet').fiber!.dispose()
   expect(ctx.tools.get('send_to_session', scopeOf(caller.ctx))).toBeUndefined()
 })
