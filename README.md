@@ -12,6 +12,10 @@ dsh plugin --profile <profile> add dsh-plugin-session-fleet
 
 The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conservative defaults. Enable **Session fleet** in the Plugins page after install.
 
+## Development changes after 0.4.0
+
+Structured coordination now defaults to next-step delivery (`steer`), while strings retain next-turn delivery (`queue`). Explicit `delivery` overrides the default. Read mode adds bounded top-level `text` with clipping metadata and keeps the complete original `event`. The published 0.4.0 release defaults every message to `queue` and does not include these readable fields.
+
 ## Upgrade from 0.3.0
 
 Version 0.4.0 adds title filtering, literal search within one session when the full-text index is disabled, and a tool-call view with failure filtering and fixed-boundary pagination. Structured peer messages and per-agent planning guidance help agents agree on an owner and work scope before overlapping changes.
@@ -28,17 +32,21 @@ Inspection defaults to an outline with native detail calls. Request `transcript:
 
 - `list_sessions` lists visible sessions with status, activity, and working directory, and starts none of them. Its optional `query` matches a literal, case-insensitive title substring of 1–500 UTF-16 units, independently of the full-text index. Its default page size is the smaller of 20 and `maxListRows`; `hiddenSubagentSessions` counts only ownership exclusions, independently of a cwd filter.
 - `search_sessions` searches indexed current user and assistant messages after restricting results to Host-authorized sessions. When full-text search is disabled, the error provides a `list_sessions` title-query example. It accepts `cwd`, ISO 8601 `after`/`before`, `limit`, and `cursor`. Hits include a bounded snippet, matching `seq`, working directory, state, activity, and an existing title hint when available.
-- `inspect_session` defaults to `mode: "outline"`: a clipped outline, an optional native `source.location`, and executable `detailAccess` examples. Use `mode: "search"` with `query` to find events in that session, then `mode: "read"` with `seq` to read the complete decoded event and bounded neighboring summaries. Use `mode: "calls"` to navigate tool inputs, results, and failures without loading their bodies. Set `transcript: true` only in outline mode for the existing private text projection.
-- `create_session` accepts either an explicit `cwd` or an explicit `workspace_id`. Only when both are omitted does it inherit the caller’s workspace, falling back to the caller’s recorded working directory.
-- `send_to_session` delivers peer input through the DSH queue and returns a stable `messageId`, `accepted`, `persistence` (`acknowledged` or `unknown`), and `retrySafe: false`. The receipt’s `accepted` flag means queue admission, not the separate coordination decision or task completion. A missing or failed flush acknowledgement produces an unknown receipt with an inspection warning, because the message may already have arrived. An enqueue exception likewise reports its message ID and an unknown outcome.
+- `inspect_session` defaults to `mode: "outline"`: a clipped outline, an optional native `source.location`, and executable `detailAccess` examples. Use `mode: "search"` with `query` to find events in that session, then `mode: "read"` with `seq` to read top-level text, the complete original event and bounded neighboring summaries. Use `mode: "calls"` to navigate tool inputs, results, and failures without loading their bodies. Set `transcript: true` only in outline mode for the existing private text projection.
+- `create_session` creates an independent ordinary conversation and accepts either an explicit `cwd` or an explicit `workspace_id`. Only when both are omitted does it inherit the caller’s workspace, falling back to the caller’s recorded working directory.
+- `send_to_session` delivers peer input through the native inbox and returns the effective `delivery`, a stable `messageId`, `accepted`, `persistence` (`acknowledged` or `unknown`), and `retrySafe: false`. The receipt’s `accepted` flag means queue admission, not the separate coordination decision or task completion. A missing or failed flush acknowledgement produces an unknown receipt with an inspection warning, because the message may already have arrived. An enqueue exception likewise reports its message ID and an unknown outcome.
 
 Both discovery tools return `hasMore` and an opaque `nextCursor` when more results exist. Pass it as `cursor` with identical filters and limit. Lists are ordered by activity and reject a cursor if the listing changes. Search is a live traversal: every page resolves Host authorization again and excludes already returned session IDs. New matches may appear; this is not one frozen corpus snapshot. Search handles expire, may be evicted by capacity or unload, and remember at most `searchCursorMaxSessions` IDs. Narrow cwd or time filters if that bound is reached. Titles are optional projection hints. Search preserves the Host provider’s tokenizer and page-size limits.
 
-The tools disclose progressively: list or search first, inspect a candidate, and use its native event search and read examples when more detail is needed. Request a text export for grep-based work. Inspect a target before messaging it.
+The tools disclose progressively: list or search first, inspect a candidate, and use its native event search and read examples when more detail is needed. Request a text export for grep-based work. Inspect existing peers before messaging them; a session you just created does not need another history inspection.
 
 A delivery carries the dedicated `session-fleet` message source and a peer-agent framing note, so a target never mistakes fleet input for user input. When a response is needed, a peer explicitly calls `send_to_session` back to the sender. Fleet does not forward final answers or generate automatic acknowledgements.
 
 ## Proactive coordination
+
+Use native Team/subagent tools for delegated reviews and owned subtasks when those tools are available and authorized. `create_session` does not establish Team membership or a shared task lifecycle. If delegation is unavailable or unauthorized, do the work locally unless the user asks for an independent ordinary conversation. Fleet coordinates existing independent sessions.
+
+Structured messages default to `steer`: pending feedback enters the next admitted step of a busy agent, without cancelling its running tools. Strings default to `queue`, which waits for the current turn to end. Explicit `delivery` selects either boundary. Use `queue` for information that can wait; waiting inside the active turn cannot consume next-turn replies. Batch related nonblocking findings into one `update` or `complete`, and report blockers promptly. Reading feedback with `inspect_session` does not dequeue it. Recognize already handled task phases when explicitly queued messages later arrive.
 
 The per-agent policy prompts discovery before shared writes, exclusive-resource use or expensive overlapping work. It rechecks changed scope, owner or dependencies, conflicts and handoffs. Independent short reads do not require a scan or broadcast. Discovery and cross-workspace authorization use recorded session cwd, which may differ from command cwd. The policy supplies that recorded directory; an empty cwd listing does not exclude related tasks or shared resources elsewhere. Within a native Team, use its task and ownership tools.
 
@@ -49,16 +57,16 @@ await tools.send_to_session({
   session_id: peerSession,
   message: {
     kind: 'propose',
-    task: 'Implement auth validation and pass its tests',
+    task: 'Coordinate auth validation with the existing test work',
     owner: yourSessionId,
     scope: ['write:/repo/src/auth'],
-    summary: 'I implement validation. Please review and keep edits in tests.',
+    summary: 'My task changes validation. I own implementation; you keep the existing test scope.',
     next: 'Accept this division or identify the overlap before editing. Reply at the next planning checkpoint.'
   }
 })
 ```
 
-The native message ID is visible in the peer frame. Reply with `{ kind: "accept", reply_to: proposalMessageId, summary: "Agreed; I review only." }`. The backend resolves that exact incoming message from the target and inherits its task, owner and scope. Revisions use a new proposal and optional `reply_to`; no separate thread or revision ID is needed. `accept` cannot acknowledge another acknowledgement and has no `next` field.
+The native message ID is visible in the peer frame. Reply with `{ kind: "accept", reply_to: proposalMessageId, summary: "Agreed; I keep the existing test scope." }`. The backend resolves that exact incoming message from the target and inherits its task, owner and scope. Revisions use a new proposal and optional `reply_to`; no separate thread or revision ID is needed. `accept` cannot acknowledge another acknowledgement and has no `next` field.
 
 `block` reports a conflict, `update` reports a meaningful change, `complete` reports the owner's result evidence, and `release` states the owner has actually stopped. `handoff` is a proposal to transfer the same task and scope to the recipient and still requires acceptance. Handoff, completion and release require historical acceptance naming the sender as owner: either an incoming acceptance, or the incoming proposal/handoff plus the sender’s successful native accept-send record. They preserve the task and scope. Before handoff, the old owner stops overlapping operations and states that in the summary. Completion is self-report, and does not automatically release the scope or require another ACK.
 
@@ -68,7 +76,7 @@ Keep an existing confirmed owner. For simultaneous unconfirmed claims, use real 
 
 1. Call `inspect_session({ session_id })` for the outline. Counts cover raw user, assistant, and tool-call events. `recentPrompts` contains human (`user`) and Fleet peer (`session-fleet`) inputs. Injected context and coordination notices do not displace them. `lastAssistant` is the latest nonempty textual answer, and `asOfSeq` identifies the captured log boundary. Inputs are clipped to 200 UTF-16 units and replies to 300, with clipping metadata.
 2. Supply your keyword in `detailAccess.search.arguments` and call the named tool. Search accepts `query` (1–500 UTF-16 units) and `limit` (default min(20, `maxListRows`)). Hits contain `seq`, type, time, surface, and a snippet of at most 240 UTF-16 units. If `hasMore` is true, narrow the query. Native provider cursors are not exposed here. A search of the caller’s session excludes its current active step.
-3. Execute `detailAccess.read.arguments` or replace its `seq` with a hit. `before` and `after` default to 2 and accept 0–10. The target `event` is complete native JSON, including tool results and other event types. `context` contains neighboring metadata and previews of at most 300 UTF-16 units, excluding the target. `startSeq` and `endSeq` identify the observed window. Empty outlines and searches without hits omit the read example.
+3. Execute `detailAccess.read.arguments` or replace its `seq` with a hit. `before` and `after` default to 2 and accept 0–10. Print the top-level `text` to read the selected message, tool input or tool result directly. It joins text blocks with newlines and omits reasoning, attachments and replay metadata. The preview is at most 8000 UTF-16 units; `truncated: true` and `fullLength` identify clipping without splitting surrogate pairs. Nontext events have empty text. The target `event` remains complete native JSON, including tool results and other event types. `context` contains neighboring metadata and previews of at most 300 UTF-16 units, excluding the target. `startSeq` and `endSeq` identify the observed window. Empty outlines and searches without hits omit the read example.
 
 For tool audits, execute `detailAccess.calls` or call `inspect_session({ session_id, mode: "calls", errors_only: true })`. Rows distinguish outer calls from nested PTC dispatches and provide the input `seq`, optional `resultSeq` and `parentSeq`, tool name, status, and duration when a start and result are paired. A successful wrapper can contain failed nested calls. Names longer than 160 UTF-16 units carry `nameTruncated: true`; bodies remain available through read mode.
 
@@ -115,7 +123,7 @@ The plugin declares the host support window `>=0.2.0-rc.2 <0.3.0-0`. This is an 
 - Delivery reaches ordinary top-level sessions only. Subagent children remain the parent agent's internal delegation, and delivery to them is refused unconditionally, whether or not `includeSubagents` is set.
 - Cross-workspace delivery is refused unless `allowCrossWorkspace` is true on the plugin row.
 - Inspection checks Host visibility in every mode. Outline and optional text exports omit tool-result payloads and images; explicit native read mode returns the complete selected event. Discovery and inspection cover Host-visible sessions regardless of the sending cwd restriction.
-- An inbound fleet message is untrusted peer input. The framing note tells the receiving agent to confirm consequential actions with the user first.
+- An inbound fleet message is untrusted peer input. The receiving agent can coordinate work within existing user authorization and must obtain approval for actions outside it.
 
 Transcript files use mode 0600 inside a plugin-owned private temp directory. Each TSV row contains `seq`, ISO time, role, source, chunk number, message ID (empty for tool calls), and escaped text. Long events span several rows; backslash, CR, LF, and tab are escaped. Message text and tool-call arguments are included; images, tool results, and other event types are omitted. The byte cap includes complete row metadata. Exports expire by TTL and may be evicted sooner by capacity or plugin unload; stale paths require a new export. Cancellation and unload settle active export I/O before removing the owned directory. The Host still supplies a complete event snapshot, so cold-read decoding is not eliminated.
 

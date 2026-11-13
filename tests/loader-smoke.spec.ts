@@ -15,6 +15,7 @@ import WorkspaceRegistry from '@deepseek-ai/dsh-workspace'
 import SessionQuery from '@deepseek-ai/dsh-session-query-sqlite'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
+import { defineTool } from '@deepseek-ai/dsh-tools'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
 import { mkdtemp, mkdir, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -85,8 +86,8 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   const caller = ctx.agents.get(created.sessionId)!
   expect(workspace.sessionIds).toContain(caller.id)
   let call = 0
-  const execute = async (name: string, args: unknown) => {
-    const result = await ctx.tools.execute({ callId: ToolCallId('smoke-' + ++call), name, arguments: args, signal: new AbortController().signal, agent: caller })
+  const execute = async (name: string, args: unknown, agent = caller) => {
+    const result = await ctx.tools.execute({ callId: ToolCallId('smoke-' + ++call), name, arguments: args, signal: new AbortController().signal, agent })
     const text = result.content.flatMap(block => (block.type === 'text' ? [block.text] : [])).join('')
     expect(result.isError, text).not.toBe(true)
     return JSON.parse(text)
@@ -269,7 +270,8 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
         writes++
         return toolCallResponse('coord-complete', 'send_to_session', {
           session_id: reviewerId,
-          message: { kind: 'complete', reply_to: acceptanceId, summary: 'Validation complete; artifact is saved at the agreed path.' }
+          message: { kind: 'complete', reply_to: acceptanceId, summary: 'Validation complete; artifact is saved at the agreed path.' },
+          delivery: 'queue'
         })
       },
       () => textResponse('Completed the agreed scope.')
@@ -283,7 +285,8 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
         expect(proposed.contract.kind).toBe('propose')
         return toolCallResponse('coord-accept', 'send_to_session', {
           session_id: ownerId,
-          message: { kind: 'accept', reply_to: proposed.id, summary: 'Agreed. I review only and leave the shared file to you.' }
+          message: { kind: 'accept', reply_to: proposed.id, summary: 'Agreed. I review only and leave the shared file to you.' },
+          delivery: 'queue'
         })
       },
       () => textResponse('Accepted the scope; no further acknowledgement is needed.'),
@@ -368,6 +371,103 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   )
   expect(receivedReplies.map(reply => reply?.kind)).toEqual(['accept', 'complete', 'handoff', 'release'])
   expect(receivedReplies[0]?.reply_to).toBe(assignment.messageId)
+  const workStarted = Promise.withResolvers<void>()
+  const workCanFinish = Promise.withResolvers<void>()
+  let heldSignal: AbortSignal | undefined
+  ctx.tools.register(
+    defineTool({
+      name: 'fleet_hold_work',
+      description: 'Hold one fixture tool until the test admits peer feedback.',
+      parameters: {},
+      output: { schema: { type: 'string' }, render: value => [{ type: 'text' as const, text: value }] },
+      async execute(_args, exec) {
+        heldSignal = exec.signal
+        workStarted.resolve()
+        await workCanFinish.promise
+        return 'work checkpoint reached'
+      }
+    })
+  )
+  const busyOwnerId = SessionId('coord-busy-owner')
+  const busyReviewerId = SessionId('coord-busy-reviewer')
+  let proposalForBusyOwner = ''
+  let observedFeedback: string[] = []
+  const busyReceipts: Array<{ delivery: string; accepted: boolean }> = []
+  ctx.llm.registerAdapter(
+    ['coord-busy-owner'],
+    new MockAdapter([
+      toolCallResponse('busy-work', 'fleet_hold_work', {}),
+      options => {
+        observedFeedback = options.messages.flatMap(message => (message.role === 'user' && message.source.kind === 'session-fleet' ? [message.source.coordination!.kind] : []))
+        return textResponse('Review feedback incorporated in the current turn.')
+      }
+    ])
+  )
+  ctx.llm.registerAdapter(
+    ['coord-busy-reviewer'],
+    new MockAdapter([
+      options => {
+        proposalForBusyOwner = receivedCoordination(options).id
+        return toolCallResponse('busy-accept', 'send_to_session', {
+          session_id: busyOwnerId,
+          message: { kind: 'accept', reply_to: proposalForBusyOwner, summary: 'I accept the independent review scope.' }
+        })
+      },
+      options => {
+        busyReceipts.push(JSON.parse(toolText(options)))
+        return toolCallResponse('busy-update', 'send_to_session', {
+          session_id: busyOwnerId,
+          message: { kind: 'update', reply_to: proposalForBusyOwner, summary: 'One actionable finding for the current implementation.' }
+        })
+      },
+      options => {
+        busyReceipts.push(JSON.parse(toolText(options)))
+        return toolCallResponse('busy-complete', 'send_to_session', {
+          session_id: busyOwnerId,
+          message: { kind: 'complete', reply_to: proposalForBusyOwner, summary: 'Review complete; apply the recorded finding.' }
+        })
+      },
+      options => {
+        busyReceipts.push(JSON.parse(toolText(options)))
+        return textResponse('Review finished without an acknowledgement loop.')
+      }
+    ])
+  )
+  const busyOwner = await ctx.agentLoop.create(busyOwnerId, { provider: 'coord-busy-owner', model: 'mock' }, { cwd: workspace.path })
+  const busyReviewer = await ctx.agentLoop.create(busyReviewerId, { provider: 'coord-busy-reviewer', model: 'mock' }, { cwd: workspace.path })
+  busyOwner.followup(createUserMessage({ content: [{ type: 'text', text: 'Continue the authorized work while an independent peer reviews.' }], source: { kind: 'user' } }))
+  try {
+    await workStarted.promise
+    await execute(
+      'send_to_session',
+      {
+        session_id: busyReviewerId,
+        message: {
+          kind: 'propose',
+          task: 'Review the in-progress artifact',
+          owner: busyReviewerId,
+          scope: ['read:' + sharedFile],
+          summary: 'Review this independent scope while I reach a work checkpoint.',
+          next: 'Accept, report findings and complete.'
+        }
+      },
+      busyOwner
+    )
+    await busyReviewer.whenIdle()
+    expect(busyReceipts).toEqual(Array.from({ length: 3 }, () => expect.objectContaining({ delivery: 'steer', accepted: true })))
+    expect(heldSignal?.aborted).toBe(false)
+    const pending = busyOwner.session
+      .snapshotEvents()
+      .filter(event => event.type === 'agent/inbox/spliced' && event.data.inserted?.some(item => item.source.kind === 'session-fleet'))
+    expect(pending.map(event => event.data.target)).toEqual(['next-step', 'next-step', 'next-step'])
+    expect(busyOwner.session.snapshotEvents().some(event => event.type === 'turn/end')).toBe(false)
+  } finally {
+    workCanFinish.resolve()
+    await busyOwner.whenIdle()
+  }
+  expect(observedFeedback).toEqual(['accept', 'update', 'complete'])
+  expect(busyOwner.session.snapshotEvents().filter(event => event.type === 'turn/start')).toHaveLength(1)
+  expect(busyOwner.session.snapshotEvents().filter(event => event.type === 'user/message' && event.data.source.kind === 'session-fleet')).toHaveLength(3)
   await ctx.loader.resolve('fleet').fiber!.dispose()
   expect(ctx.tools.get('send_to_session', scopeOf(caller.ctx))).toBeUndefined()
 })
