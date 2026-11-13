@@ -12,9 +12,9 @@ dsh plugin --profile <profile> add dsh-plugin-session-fleet
 
 The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conservative defaults. Enable **Session fleet** in the Plugins page after install.
 
-## Development changes after 0.4.0
+## Upgrade from 0.4.0
 
-Structured coordination now defaults to next-step delivery (`steer`), while strings retain next-turn delivery (`queue`). Explicit `delivery` overrides the default. Read mode adds bounded top-level `text` with clipping metadata and keeps the complete original `event`. `manage_session_inbox` adds inspection, revision-checked replacement and withdrawal of pending peer input. Send receipts now include a `revision`. Queue previews show the message kind, sender hint and summary. The published 0.4.0 release defaults every message to `queue` and includes neither these readable fields nor pending-message management.
+Version 0.5.0 adds pending-message management and readable inspection results. Structured coordination defaults to next-step delivery (`steer`), while strings retain next-turn delivery (`queue`). Explicit `delivery` overrides the default. Read mode adds bounded top-level `text` with clipping metadata and keeps the complete original `event`. `manage_session_inbox` adds inspection, revision-checked replacement and withdrawal of pending peer input. Send receipts now include a `revision`. Queue previews show the message kind, sender hint and summary. The published 0.4.0 release defaults every message to `queue` and includes neither these readable fields nor pending-message management.
 
 ## Upgrade from 0.3.0
 
