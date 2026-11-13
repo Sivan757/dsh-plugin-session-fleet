@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Instructions for working in this repository. It ships one DeepSeek Harness plugin: five model-facing tools that let one agent discover and inspect other sessions, create a session, and message a session.
+Instructions for working in this repository. It ships one DeepSeek Harness plugin: six model-facing tools that let one agent discover and inspect other sessions, create a session, and message a session.
 
 ## Layout
 
@@ -18,7 +18,7 @@ scripts/        check-host-support.mjs, the host pin gate
 pnpm run typecheck        # tsc --noEmit
 pnpm run lint             # oxlint src tests
 pnpm run test             # vitest run; pretest runs check:refactor
-pnpm run build            # tsc declarations, then tsdown bundles lib/index.js
+pnpm run build            # tsdown bundles lib/index.js, then tsc declarations
 pnpm run check:refactor   # host support window + typecheck + lint + prettier
 ```
 

@@ -2,7 +2,7 @@
 import { expect, it } from 'vitest'
 import { SessionId, SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { ToolCallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
-import { preparePeerMessage, type PeerMessageInput } from '../src/coordination.ts'
+import { preparePeerMessage, revisePeerMessage, reframePeerMessage, peerMessageSummary, type PeerMessageInput } from '../src/coordination.ts'
 
 const a = SessionId('session-a')
 const b = SessionId('session-b')
@@ -16,6 +16,48 @@ const proposal = {
   next: 'Accept this division or state the conflicting scope before editing.'
 } as const
 const propose = () => preparePeerMessage(a, b, { ...proposal, scope: [...proposal.scope] }, 20000)
+
+it('revises a cumulative summary without changing the author, contract or message identity', () => {
+  const original = propose()
+  const revised = revisePeerMessage(original, 'Cumulative current status; the original scope still applies.', 20000)
+  expect(revised.id).toBe(original.id)
+  expect(revised.source).toEqual({ ...original.source, coordination: { ...original.source.coordination, summary: 'Cumulative current status; the original scope still applies.' } })
+  expect(revised.content[0]).toMatchObject({ text: expect.stringContaining('[Fleet propose ·') })
+  expect(revised.content[1]).toEqual({ type: 'text', text: JSON.stringify(revised.source.coordination) })
+  expect(original.source.coordination?.summary).toBe(proposal.summary)
+  expect(() => revisePeerMessage(original, 'x'.repeat(2001), 20000)).toThrow('bound')
+})
+
+it.each(['legacy', 'current'] as const)('preserves a %s preface coalesced with its payload in one text block', format => {
+  const original = propose()
+  const combined = original.content.flatMap(block => (block.type === 'text' ? [block.text] : [])).join('')
+  const text = format === 'legacy' ? combined.slice(combined.indexOf('<system-reminder>')) : combined
+  const coalesced = { ...original, content: [{ type: 'text' as const, text }] }
+  const refreshed = reframePeerMessage(coalesced)
+  expect(refreshed.id).toBe(original.id)
+  expect(refreshed.source).toEqual(original.source)
+  expect(refreshed.content.slice(1)).toEqual(original.content.slice(1))
+  expect(peerMessageSummary(coalesced, 2000)).toEqual({ text: proposal.summary })
+})
+
+it('shows a manual payload edit instead of repeating stale structured metadata', () => {
+  const original = propose()
+  const manual = { ...original, content: [original.content[0]!, { type: 'text' as const, text: 'Edited in the receiving UI: keep this new finding.' }] }
+  expect(peerMessageSummary(manual, 800)).toMatchObject({ text: 'Edited in the receiving UI: keep this new finding.', bodyEdited: true })
+  expect(manual.source.coordination).toEqual(original.source.coordination)
+})
+
+it('refreshes older queue framing without changing payload or authority', () => {
+  const original = propose()
+  const first = original.content[0]!
+  if (first.type !== 'text') throw new Error('Expected frame')
+  const legacy = { ...original, content: [{ ...first, text: first.text.slice(first.text.indexOf('<system-reminder>')) }, ...original.content.slice(1)] }
+  const refreshed = reframePeerMessage(legacy)
+  expect(refreshed.id).toBe(legacy.id)
+  expect(refreshed.source).toEqual(legacy.source)
+  expect(refreshed.content.slice(1)).toEqual(legacy.content.slice(1))
+  expect(refreshed.content[0]).toMatchObject({ text: expect.stringContaining(proposal.summary) })
+})
 const received = (message: ReturnType<typeof preparePeerMessage>): SessionEvent[] => [{ seq: SessionSeq(0), time: 0, type: 'user/message', data: message }]
 
 it('keeps native identity visible in the frame while preserving plain peer input', () => {

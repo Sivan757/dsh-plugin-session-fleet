@@ -1,7 +1,8 @@
 /** Native session inspection and the follow-up calls exposed to an Agent. */
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { textPreview } from './text.ts'
+import { peerMessageBody } from './coordination.ts'
 import { SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session'
 import type { InferValue } from '@deepseek-ai/dsh-tools'
 import type { SessionPersistenceSnapshot } from '@deepseek-ai/dsh-session-persistence'
@@ -161,6 +162,13 @@ const READ_SCHEMA = {
     mode: { type: 'string', required: true, const: 'read' },
     sessionId: { type: 'string', required: true },
     event: { type: 'json', required: true },
+    text: {
+      type: 'string',
+      required: true,
+      description: 'Readable text or tool arguments/results, up to 8000 UTF-16 units. Nontext events return an empty string; event retains the complete original.'
+    },
+    truncated: { type: 'boolean' },
+    fullLength: { type: 'integer' },
     context: { type: 'array', required: true, items: CONTEXT_SCHEMA },
     startSeq: { type: 'integer', required: true },
     endSeq: { type: 'integer', required: true },
@@ -223,7 +231,7 @@ export function inspectParameters(maxRows: number) {
     mode: {
       type: 'string',
       enum: ['outline', 'search', 'read', 'calls'],
-      description: 'Defaults to outline. Use calls for tool inputs, results and failures, search to find events, or read for one complete raw event.'
+      description: 'Defaults to outline. Use calls for tool inputs, results and failures, search to find events, or read for readable text and the complete original event.'
     },
     transcript: { type: 'boolean', description: 'Only for outline: generate a bounded private text projection for grep. Defaults to false.' },
     query: { type: 'string', description: 'Required for search: word or phrase, 1–500 UTF-16 code units. Uses native literal matching when the full-text index is disabled.' },
@@ -247,25 +255,24 @@ export function inspectParameters(maxRows: number) {
 const PROMPT_CLIP = 200
 const REPLY_CLIP = 300
 const RECENT_PROMPTS = 3
+const READ_TEXT_CLIP = 8000
 
-/** Preview joined text blocks without copying message bodies beyond the display bound. */
-function textPreview(content: readonly ContentBlock[], max: number): { text: string; truncated?: true; fullLength?: number } {
-  let text = ''
-  let fullLength = 0
-  let blocks = 0
-  for (const block of content) {
-    if (block.type !== 'text') continue
-    if (blocks++ > 0) {
-      fullLength++
-      if (text.length < max) text += ' '
-    }
-    fullLength += block.text.length
-    if (text.length < max) text += block.text.slice(0, max - text.length)
+/** Select readable event content without replay streams, reasoning, or attachment payloads. */
+function readText(event: SessionEvent) {
+  switch (event.type) {
+    case 'user/message':
+    case 'tool/ptc-dispatch':
+      return textPreview(event.data.content, READ_TEXT_CLIP, '\n')
+    case 'assistant/message':
+    case 'tool/result':
+      return textPreview(event.data.message.content, READ_TEXT_CLIP, '\n')
+    case 'tool/call':
+      return textPreview([{ type: 'text', text: event.data.arguments }], READ_TEXT_CLIP)
+    case 'tool/ptc-dispatch-start':
+      return textPreview([{ type: 'text', text: JSON.stringify(event.data.arguments) }], READ_TEXT_CLIP)
+    default:
+      return { text: '' }
   }
-  if (fullLength <= max) return { text }
-  const last = text.charCodeAt(text.length - 1)
-  if (last >= 0xd800 && last <= 0xdbff) text = text.slice(0, -1)
-  return { text, truncated: true, fullLength }
 }
 
 /** Keep the literal match visible even in long commands and tool results. */
@@ -279,14 +286,7 @@ function literalSnippet(text: string, pattern: RegExp): string {
 /** One message row for the inspect view, or undefined for events that are not messages. */
 function messageRow(event: SessionEvent, max: number): InferValue<typeof INSPECT_MESSAGE_SCHEMA> | undefined {
   if (event.type === 'user/message') {
-    const first = event.data.content[0]
-    const ownFraming =
-      event.data.source.kind === 'session-fleet' &&
-      event.data.content.length > 1 &&
-      first?.type === 'text' &&
-      first.text.startsWith('<system-reminder>') &&
-      first.text.includes('through the session-fleet tools.')
-    const content = ownFraming ? event.data.content.slice(1) : event.data.content
+    const content = event.data.source.kind === 'session-fleet' ? peerMessageBody(event.data) : event.data.content
     return {
       seq: event.seq,
       messageId: event.data.id,
@@ -447,6 +447,7 @@ export async function inspectSession(
       mode,
       sessionId,
       event,
+      ...readText(window.target),
       context: window.events.filter(item => item.seq !== window.target.seq).map(contextSummary),
       startSeq: window.startSeq,
       endSeq: window.endSeq,
