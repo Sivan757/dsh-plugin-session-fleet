@@ -137,7 +137,7 @@ function expectToolError(result: Awaited<ReturnType<typeof execute>>, fragment: 
   expect(text(result)).toContain(fragment)
 }
 
-const FLEET_TOOLS = ['list_sessions', 'search_sessions', 'inspect_session', 'create_session', 'send_to_session'].sort()
+const FLEET_TOOLS = ['list_sessions', 'search_sessions', 'inspect_session', 'manage_session_inbox', 'create_session', 'send_to_session'].sort()
 
 describe('fleet location and list boundaries', () => {
   it('uses an explicit cwd without inheriting the caller workspace', async () => {
@@ -772,7 +772,15 @@ describe('session-fleet tools', () => {
         })
       )
     ) as { sessionId: string; delivery: string; accepted: boolean; messageId: string }
-    expect(sent).toEqual({ sessionId: 'fleet-other', delivery: 'queue', accepted: true, messageId: expect.any(String), persistence: 'acknowledged', retrySafe: false })
+    expect(sent).toEqual({
+      sessionId: 'fleet-other',
+      delivery: 'queue',
+      accepted: true,
+      messageId: expect.any(String),
+      revision: expect.any(String),
+      persistence: 'acknowledged',
+      retrySafe: false
+    })
     expect(other.status).toBe('idle')
 
     await other.whenIdle()
@@ -824,6 +832,14 @@ describe('session-fleet tools', () => {
     expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-lead', message: 'note' }), 'targets another session')
     expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-other', message: 'x'.repeat(20_001) }), 'exceeds 20000 characters')
     expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-foreign', message: 'hello' }), 'cross-workspace delivery is disabled')
+  })
+
+  it('refuses a resolved alias that would deliver back to the caller', async () => {
+    const { ctx, lead, other } = await setup()
+    vi.spyOn(ctx.sessionController, 'resolveAgent').mockResolvedValueOnce({ agent: lead })
+    expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: other.id, message: 'not a self prompt' }), 'identity is invalid')
+    expect(lead.inbox.nextTurn).toHaveLength(0)
+    expect(lead.inbox.nextStep).toHaveLength(0)
   })
 
   it('delivers across workspaces when the deployment opts in', async () => {

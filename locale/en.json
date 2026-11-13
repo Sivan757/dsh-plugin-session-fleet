@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Session fleet",
-    "description": "Find and read DSH sessions, create independent conversations, and coordinate work with peer agents."
+    "description": "Find and read DSH sessions, create independent conversations, and coordinate work and manage pending peer messages."
   }
 }
