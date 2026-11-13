@@ -10,7 +10,7 @@ import AgentLoop from '@deepseek-ai/dsh-agent-loop'
 import { mountAgentLoopTestDependencies } from '@deepseek-ai/dsh-agent-loop-testkit'
 import { ToolCallId, createUserMessage } from '@deepseek-ai/dsh-llm'
 import { scopeOf } from '@deepseek-ai/dsh-scope'
-import { SessionId, SessionSeq } from '@deepseek-ai/dsh-session'
+import { SessionId, SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { jsonlPersistencePlugin as JsonlSessionPersistence } from '../testkit/jsonl-persistence.ts'
 import SessionQueryEngine, { SessionQueryError, SessionSearchCursor } from '@deepseek-ai/dsh-session-query'
 import SqliteSessionQuery from '@deepseek-ai/dsh-session-query-sqlite'
@@ -484,10 +484,70 @@ describe('native inspection interaction', () => {
     const native = vi.spyOn(ctx.sessionQuery, 'readEvent')
     const detail = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode: 'read', seq: target.seq, before: 2, after: 2 })))
     expect(detail.event).toEqual(target)
+    expect(detail.text).toBe(body.slice(0, 8000))
+    expect(detail.truncated).toBe(true)
+    expect(detail.fullLength).toBe(body.length)
     expect(detail.context.length).toBeLessThanOrEqual(4)
     expect(detail.context.every((event: { text?: string }) => event.text === undefined || event.text.length <= 300)).toBe(true)
     expect(native.mock.calls[0]?.[0]).toMatchObject({ sessionId: other.id, seq: target.seq, before: 2, after: 2 })
     expect(native.mock.calls[0]?.[1]).toBe(SIGNAL)
+  })
+
+  it.each(['assistant', 'ptc-input', 'ptc-result'] as const)('exposes readable %s text without replay metadata or nontext blocks', async kind => {
+    const { ctx, lead, other } = await setup({}, [textResponse('initial answer')])
+    other.followup(createUserMessage({ content: [{ type: 'text', text: 'read fixture' }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const original = other.session.snapshotEvents().find(event => event.type === 'assistant/message')!
+    const window = await ctx.sessionQuery.readEvent({ sessionId: other.id, seq: original.seq }, SIGNAL)
+    const dispatch = {
+      rootCallId: ToolCallId('read-root'),
+      parentCallId: ToolCallId('read-root'),
+      subCallId: ToolCallId('read-leaf'),
+      name: 'read',
+      arguments: { path: 'fixture' }
+    }
+    const target: SessionEvent =
+      kind === 'assistant'
+        ? {
+            ...original,
+            data: {
+              ...original.data,
+              message: {
+                ...original.data.message,
+                content: [
+                  { type: 'reasoning', text: 'not-readable-reasoning' },
+                  { type: 'text', text: 'First line' },
+                  { type: 'text', text: 'Second line' }
+                ]
+              }
+            }
+          }
+        : kind === 'ptc-input'
+          ? { seq: original.seq, time: original.time, type: 'tool/ptc-dispatch-start', data: dispatch }
+          : {
+              seq: original.seq,
+              time: original.time,
+              type: 'tool/ptc-dispatch',
+              data: { ...dispatch, isError: true, content: [{ type: 'text', text: 'Read failed: fixture missing' }] }
+            }
+    vi.spyOn(ctx.sessionQuery, 'readEvent').mockResolvedValueOnce({ ...window, target, events: [target] })
+    const detail = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode: 'read', seq: target.seq })))
+    expect(detail.event).toEqual(target)
+    expect(detail.text).toBe(kind === 'assistant' ? 'First line\nSecond line' : kind === 'ptc-input' ? '{"path":"fixture"}' : 'Read failed: fixture missing')
+    expect(detail.truncated).toBeUndefined()
+    expect(detail.text).not.toContain('not-readable-reasoning')
+  })
+
+  it('keeps a surrogate pair intact at the readable text bound', async () => {
+    const { ctx, lead, other } = await setup()
+    const body = 'x'.repeat(7999) + '😀tail'
+    other.followup(createUserMessage({ content: [{ type: 'text', text: body }], source: { kind: 'user' } }))
+    await other.whenIdle()
+    const target = other.session.snapshotEvents().find(event => event.type === 'user/message')!
+    const detail = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode: 'read', seq: target.seq })))
+    expect(detail.text).toBe('x'.repeat(7999))
+    expect(detail).toMatchObject({ truncated: true, fullLength: body.length })
+    expect(detail.event).toEqual(target)
   })
 
   it('uses native session event search and offers a read call for the hit', async () => {
@@ -517,6 +577,7 @@ describe('native inspection interaction', () => {
     expect(target).toBeDefined()
     const detail = JSON.parse(text(await execute(ctx, lead, 'inspect_session', { session_id: other.id, mode: 'read', seq: target.seq, before: 10, after: 0 })))
     expect(detail.event).toEqual(target)
+    expect(detail.text).toBe(target.data.message.content.flatMap(block => (block.type === 'text' ? [block.text] : [])).join('\n'))
     const call = detail.context.find((event: { type: string }) => event.type === 'tool/call')
     expect(call).toMatchObject({ source: 'list_sessions', truncated: true })
     expect(call.text.length).toBeLessThanOrEqual(300)
@@ -730,6 +791,31 @@ describe('session-fleet tools', () => {
     })
     expect(steered.isError, text(steered)).toBe(false)
     await other.whenIdle()
+  })
+
+  it.each([undefined, 'queue', 'steer'] as const)('routes structured coordination with delivery %s', async delivery => {
+    const { ctx, lead, other } = await setup()
+    const receipt = JSON.parse(
+      text(
+        await execute(ctx, lead, 'send_to_session', {
+          session_id: other.id,
+          ...(delivery === undefined ? {} : { delivery }),
+          message: {
+            kind: 'propose',
+            task: 'Coordinate an independent task',
+            owner: lead.id,
+            scope: ['read:/fixture'],
+            summary: 'Please check the shared scope.',
+            next: 'Accept or block.'
+          }
+        })
+      )
+    )
+    await other.whenIdle()
+    expect(receipt.delivery).toBe(delivery ?? 'steer')
+    const admissions = other.session.snapshotEvents().filter(event => event.type === 'agent/inbox/spliced' && event.data.inserted?.some(item => item.id === receipt.messageId))
+    expect(admissions).toHaveLength(1)
+    expect(admissions[0]!.data).toMatchObject({ target: delivery === 'queue' ? 'next-turn' : 'next-step' })
   })
 
   it('rejects unknown targets, self-delivery, oversized messages, and cross-workspace by default', async () => {
