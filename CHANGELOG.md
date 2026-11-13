@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.4.0...dsh-plugin-session-fleet-v0.5.0) (2026-11-13)
+
+
+### Features
+
+* manage pending peer inbox messages ([90cf07f](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/90cf07fd8a41377f2f858e8dd49ec087318782ab))
+
+
+### Bug Fixes
+
+* deliver coordination feedback within active turns ([719a4e7](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/719a4e7dc40965e4253dfa9fff8e38a9e4b0abfc))
+
+
+### Documentation
+
+* prepare Session Fleet 0.5.0 release ([17b1b04](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/17b1b040c3e0c13da3d65fd96bcb1479a4dc0e6d))
+
 ## [0.4.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.3.0...dsh-plugin-session-fleet-v0.4.0) (2026-11-12)
 
 ### Upgrade notes
