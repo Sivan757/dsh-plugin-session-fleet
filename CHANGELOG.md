@@ -2,6 +2,18 @@
 
 ## [0.5.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.4.0...dsh-plugin-session-fleet-v0.5.0) (2026-11-13)
 
+### Upgrade notes
+
+- `manage_session_inbox` is the sixth Fleet tool. List pending peer input without starting the target, then use native message IDs and expected revisions to update cumulative summaries or withdraw covered notifications. Keep independent findings and unresolved requests.
+- New structured coordination messages default to next-step delivery (`steer`). String messages retain next-turn delivery (`queue`), and explicit `delivery` overrides the default. Existing pending messages retain their original boundary.
+- Send receipts now include `revision`. Only the sender can replace a pending delivery, and the sender or recipient can withdraw pending peer input. Message identity, contract boundaries and queue position stay fixed. Human input and consumed history remain protected.
+- `inspect_session` read results include top-level `text`, bounded to 8000 UTF-16 units, with clipping metadata and the complete original `event`. Queue previews identify the kind, sender and summary, including text blocks coalesced by native UI editing.
+- Ordinary conversations remain distinct from native Team delegation. Prefer native delegation when it is available and authorized. Queue management is advisory and does not undo ownership agreements or implement resource locks.
+
+### Validation
+
+- 136 tests pass with the Host support window, type checking, lint, formatting and production build. Native Loader/Controller/AgentLoop regressions cover active-turn feedback, stable pending-message identity, revision and consumption races, peer permissions, protected human input, resolved-target identity, and split/coalesced text framing.
+
 
 ### Features
 
