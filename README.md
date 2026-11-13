@@ -1,6 +1,6 @@
 # dsh-plugin-session-fleet
 
-Session Fleet gives a DeepSeek Harness agent five tools to find relevant session history, read original evidence, and create or message another session.
+Session Fleet gives a DeepSeek Harness agent six tools to find relevant session history, read original evidence, and create or message another session.
 
 English | [中文](README.zh.md)
 
@@ -14,7 +14,7 @@ The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conserv
 
 ## Development changes after 0.4.0
 
-Structured coordination now defaults to next-step delivery (`steer`), while strings retain next-turn delivery (`queue`). Explicit `delivery` overrides the default. Read mode adds bounded top-level `text` with clipping metadata and keeps the complete original `event`. The published 0.4.0 release defaults every message to `queue` and does not include these readable fields.
+Structured coordination now defaults to next-step delivery (`steer`), while strings retain next-turn delivery (`queue`). Explicit `delivery` overrides the default. Read mode adds bounded top-level `text` with clipping metadata and keeps the complete original `event`. `manage_session_inbox` adds inspection, revision-checked replacement and withdrawal of pending peer input. Send receipts now include a `revision`. Queue previews show the message kind, sender hint and summary. The published 0.4.0 release defaults every message to `queue` and includes neither these readable fields nor pending-message management.
 
 ## Upgrade from 0.3.0
 
@@ -33,14 +33,29 @@ Inspection defaults to an outline with native detail calls. Request `transcript:
 - `list_sessions` lists visible sessions with status, activity, and working directory, and starts none of them. Its optional `query` matches a literal, case-insensitive title substring of 1–500 UTF-16 units, independently of the full-text index. Its default page size is the smaller of 20 and `maxListRows`; `hiddenSubagentSessions` counts only ownership exclusions, independently of a cwd filter.
 - `search_sessions` searches indexed current user and assistant messages after restricting results to Host-authorized sessions. When full-text search is disabled, the error provides a `list_sessions` title-query example. It accepts `cwd`, ISO 8601 `after`/`before`, `limit`, and `cursor`. Hits include a bounded snippet, matching `seq`, working directory, state, activity, and an existing title hint when available.
 - `inspect_session` defaults to `mode: "outline"`: a clipped outline, an optional native `source.location`, and executable `detailAccess` examples. Use `mode: "search"` with `query` to find events in that session, then `mode: "read"` with `seq` to read top-level text, the complete original event and bounded neighboring summaries. Use `mode: "calls"` to navigate tool inputs, results, and failures without loading their bodies. Set `transcript: true` only in outline mode for the existing private text projection.
+- `manage_session_inbox` lists pending peer input without starting the target, or replaces/withdraws one pending occurrence with its native id and expected revision. It protects human input and consumed history. See pending-message management below.
 - `create_session` creates an independent ordinary conversation and accepts either an explicit `cwd` or an explicit `workspace_id`. Only when both are omitted does it inherit the caller’s workspace, falling back to the caller’s recorded working directory.
-- `send_to_session` delivers peer input through the native inbox and returns the effective `delivery`, a stable `messageId`, `accepted`, `persistence` (`acknowledged` or `unknown`), and `retrySafe: false`. The receipt’s `accepted` flag means queue admission, not the separate coordination decision or task completion. A missing or failed flush acknowledgement produces an unknown receipt with an inspection warning, because the message may already have arrived. An enqueue exception likewise reports its message ID and an unknown outcome.
+- `send_to_session` delivers peer input through the native inbox and returns the effective `delivery`, a stable `messageId`, its `revision`, `accepted`, `persistence` (`acknowledged` or `unknown`), and `retrySafe: false`. The receipt’s `accepted` flag means queue admission, not the separate coordination decision or task completion. A missing or failed flush acknowledgement produces an unknown receipt with an inspection warning, because the message may already have arrived. An enqueue exception likewise reports its message ID and an unknown outcome.
 
 Both discovery tools return `hasMore` and an opaque `nextCursor` when more results exist. Pass it as `cursor` with identical filters and limit. Lists are ordered by activity and reject a cursor if the listing changes. Search is a live traversal: every page resolves Host authorization again and excludes already returned session IDs. New matches may appear; this is not one frozen corpus snapshot. Search handles expire, may be evicted by capacity or unload, and remember at most `searchCursorMaxSessions` IDs. Narrow cwd or time filters if that bound is reached. Titles are optional projection hints. Search preserves the Host provider’s tokenizer and page-size limits.
 
 The tools disclose progressively: list or search first, inspect a candidate, and use its native event search and read examples when more detail is needed. Request a text export for grep-based work. Inspect existing peers before messaging them; a session you just created does not need another history inspection.
 
 A delivery carries the dedicated `session-fleet` message source and a peer-agent framing note, so a target never mistakes fleet input for user input. When a response is needed, a peer explicitly calls `send_to_session` back to the sender. Fleet does not forward final answers or generate automatic acknowledgements.
+
+## Pending-message management
+
+Use `manage_session_inbox` with `session_id` and the default `action: "list"`. It reads the native projection without resuming the Agent. Rows expose native IDs, revisions, sender and owner separately, delivery boundary, task, reply reference, outstanding next decision, summary and edit permissions. `selfAddressed` compares the actual sender to the recipient, not the contract owner. Summary previews are bounded to 800 UTF-16 units. Select `message_id` for more detail, up to `maxMessageChars`. A manual UI edit that differs from structured source metadata sets `bodyEdited` and displays the actual payload.
+
+Pagination uses `limit`, `hasMore` and an opaque `nextCursor`. Pending-input changes invalidate continuations. `completionMessageId` points to a pending completion from the same sender for the exact same reply reference. Check its coverage before discarding earlier findings. Age or a similar task name alone does not establish that input is obsolete.
+
+For `action: "replace"`, provide `message_id`, `expected_revision` and `text`. Only the original sender can replace a delivery. Text replaces the cumulative summary of a structured message or the body of a string message. The native id, sender, contract kind, task, owner, scope and queue position stay fixed. Send a new proposal for a different agreement. Save the returned revision for the next update.
+
+For `action: "withdraw"`, provide the id and expected revision. The sender can retract its pending delivery, and the recipient can remove peer input from its own inbox. Neither action edits human input or consumed messages. A changed or consumed occurrence fails without appending another message. Mutations can resume a cold Agent to access its inbox. They preserve the native event audit trail, do not start a model turn and do not undo ownership agreements. Cross-workspace mutation requires `allowCrossWorkspace`, and subagent mutation is always refused.
+
+Keep independent findings when updating a summary. A completion can replace the need for earlier notifications only when it covers their evidence. Reading a result through inspection does not withdraw pending input. Delivery receipts remain historical admission evidence after withdrawal.
+
+New previews start with `[Fleet <kind> · <sender hint>] <summary>`. On load, attached Agents' old Fleet prefaces are refreshed in place. Their IDs, source records and payload remain intact, including payload coalesced with the preface into a single text block. Cold Agents are not activated for a preview refresh. The original native log remains available.
 
 ## Proactive coordination
 
