@@ -423,7 +423,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
         defineTool({
           name: 'create_session',
           description:
-            "Create an independent ordinary conversation, not a Team worker. Prefer authorized native delegation for reviews and subtasks. With neither cwd nor workspace_id, use this session's workspace or working directory.",
+            "Create an independent ordinary conversation, not a Team worker. Prefer authorized native delegation for reviews and subtasks. With neither cwd nor workspace_id, use this session's workspace or working directory. The created session is attached to that workspace so it appears in the session list; an explicit cwd attaches only when a workspace already exists for it.",
           parameters: {
             cwd: { type: 'string', description: 'Absolute working directory for the new session.' },
             workspace_id: { type: 'string', description: 'Existing workspace to attach the new session to.' }
@@ -435,14 +435,15 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
               throw new Error('create_session accepts cwd or workspace_id, not both')
             }
             let workspaceId = args.workspace_id
-            if (workspaceId === undefined && args.cwd === undefined) {
-              const workspaces = ctx.workspaceRegistry.list()
-              const callerWs = workspaces.find(w => w.sessionIds.includes(caller.id))
-              if (callerWs !== undefined) {
-                workspaceId = callerWs.id
-              }
+            if (workspaceId === undefined) {
+              // Attach the new session to a workspace so it appears in the session list.
+              // An explicit cwd attaches only to its own workspace; otherwise use the caller's.
+              const resolved = args.cwd === undefined ? undefined : await ctx.workspaceRegistry.resolveByPath(args.cwd)
+              const callerWs = ctx.workspaceRegistry.list().find(w => w.sessionIds.includes(caller.id))
+              workspaceId = (resolved ?? (args.cwd === undefined ? callerWs : undefined))?.id
             }
-            const cwd = args.cwd ?? (workspaceId === undefined ? caller.session.header.cwd : undefined)
+            // The controller rejects a request carrying both fields; a workspace attachment carries the location itself.
+            const cwd = workspaceId === undefined ? (args.cwd ?? caller.session.header.cwd) : undefined
             if (workspaceId === undefined && cwd === undefined) {
               throw new Error('create_session could not resolve a working directory; pass cwd')
             }
