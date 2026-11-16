@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.5.0...dsh-plugin-session-fleet-v0.6.0) (2026-11-16)
+
+
+### Features
+
+* require peer agreement before shared operations ([#10](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/10)) ([488bb41](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/488bb415769cc3be80b9257024043bc7d5c6582d))
+
 ## [0.5.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.4.0...dsh-plugin-session-fleet-v0.5.0) (2026-11-13)
 
 ### Upgrade notes
