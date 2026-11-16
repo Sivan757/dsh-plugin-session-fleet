@@ -218,6 +218,35 @@ describe('fleet discovery continuation', () => {
     expectToolError(await execute(ctx, lead, 'list_sessions', { cursor: '%' }), 'Invalid list cursor')
   })
 
+  it('filters list_sessions by running status and recency', async () => {
+    const { ctx, lead } = await setup()
+    const original = await ctx.sessionController.list({}, SIGNAL)
+    const now = Date.now()
+    vi.spyOn(ctx.sessionController, 'list').mockImplementation(async () => ({
+      items: original.items.map((row, index) => ({ ...row, running: index === 0, updatedAt: index === 0 ? now : now - 3 * 3600_000 }))
+    }))
+    const running = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { status: 'running' })))
+    expect(running.total).toBe(1)
+    const recent = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { updated_within: '1h' })))
+    expect(recent.total).toBe(1)
+    const both = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { status: 'idle', updated_within: '1h' })))
+    expect(both.total).toBe(0)
+  })
+
+  it('rejects malformed recency and order values', async () => {
+    const { ctx, lead } = await setup()
+    expectToolError(await execute(ctx, lead, 'list_sessions', { updated_within: 'soon' }), 'updated_within')
+    expectToolError(await execute(ctx, lead, 'list_sessions', { order: 'title' }), 'order')
+  })
+
+  it('renders a compact view when view=compact', async () => {
+    const { ctx, lead } = await setup()
+    const rendered = text(await execute(ctx, lead, 'list_sessions', { view: 'compact' }))
+    expect(rendered).toContain(lead.id)
+    expect(rendered).not.toContain('"sessionId"')
+    expect((rendered.match(/\n/g) || []).length).toBeGreaterThanOrEqual(1)
+  })
+
   it('filters query hits against the current authorized summary list', async () => {
     const { ctx, lead } = await setup()
     vi.spyOn(ctx.sessionController, 'list').mockResolvedValueOnce({ items: [] })

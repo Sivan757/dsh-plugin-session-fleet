@@ -41,7 +41,7 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 - `create_session`：创建独立的普通对话，接受显式 `cwd` 或 `workspace_id`，两者互斥。新会话会挂载到 workspace 以便出现在会话列表：显式 `cwd` 只挂载到该路径已存在的 workspace（路径不同时绝不误挂到调用者的），两者都省略时继承调用者 workspace，找不到时使用调用者记录的工作目录。
 - `send_to_session`：经原生收件箱投递对等输入，返回实际 `delivery`、稳定 `messageId`、对应 `revision`、`accepted`、`persistence`（`acknowledged` 或 `unknown`）及 `retrySafe: false`。收据的 `accepted` 只表示进入队列，不是另外一条协作接受决定，也不代表处理完成。flush 未确认或失败时仍可能已经送达，因此返回带检查提示的未知收据。入队异常也会在错误中提供消息 ID 并明确结果未知。
 
-两个发现工具均返回 `hasMore`，还有结果时提供不透明的 `nextCursor`。保持过滤参数与 limit 不变，将它作为 `cursor` 继续调用。列表按活跃时间排序，列表变化时拒绝旧游标。搜索采用动态遍历，每页重新经过宿主授权并排除已返回的会话 ID，新匹配可能出现，不承诺整个结果集来自同一冻结快照。搜索句柄会过期，也可能因容量或卸载失效，最多记住 `searchCursorMaxSessions` 个已返回 ID；达到上限时缩小目录或时间范围。标题只是可选提示。搜索保留宿主 provider 的分词与页大小限制。
+`list_sessions` 另接受 `status`（`running`/`idle`）、`updated_within`（如 `30m`、`2h`、`1d`）、`order`（默认 `updated`，或 `id`）与 `view: "compact"`——后者为每个会话渲染一行竖线分隔文本（`id | running | 3m | 标题 …/目录/尾部`），替代 JSON 对象，是确认活跃并行会话最省 token 的方式。两个发现工具均返回 `hasMore`，还有结果时提供不透明的 `nextCursor`。保持过滤参数与 limit 不变，将它作为 `cursor` 继续调用。列表按活跃时间排序，列表变化时拒绝旧游标。搜索采用动态遍历，每页重新经过宿主授权并排除已返回的会话 ID，新匹配可能出现，不承诺整个结果集来自同一冻结快照。搜索句柄会过期，也可能因容量或卸载失效，最多记住 `searchCursorMaxSessions` 个已返回 ID；达到上限时缩小目录或时间范围。标题只是可选提示。搜索保留宿主 provider 的分词与页大小限制。
 
 投递消息携带专用的 `session-fleet` 来源标识与对等输入提示，用于向目标表明这是对等智能体输入。确实需要响应时，对端主动调用 `send_to_session` 回复发送者。插件不会自动转发最终回答或生成确认消息。
 
