@@ -16,7 +16,7 @@ export function apply(ctx, config) {
     .update(JSON.stringify(cases))
     .digest('hex')
   const registerFor = agent => {
-    if (agent.id !== config.caller) return undefined
+    if (agent.id !== config.caller && config.allowAnyCaller !== true) return undefined
     const dispose = agent.ctx.tools.register(
       defineTool({
         name: 'eval_fleet_coordination',
@@ -24,14 +24,20 @@ export function apply(ctx, config) {
         parameters: {
           case: { type: 'string', required: true, enum: cases.map(test => test.name) },
           arm: { type: 'string', required: true, enum: ['candidate', 'baseline', 'none'] },
-          repeat: { type: 'integer', required: true, enum: [1, 2, 3] }
+          repeat: { type: 'integer', required: true, enum: [1, 2, 3] },
+          provider: { type: 'string', description: 'Optional LLM provider override.' },
+          model: { type: 'string', description: 'Optional model override for the replayed selection.' }
         },
         output: { schema: { type: 'json' }, render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }] },
         timeoutMs: 90000,
         isConcurrencySafe: () => true,
         async execute(args, exec) {
-          if (exec.agent.id !== config.caller) throw new Error('Evaluation is scoped to its owning caller')
-          const selection = ctx.agentDefaultModel.currentSelection()
+          if (exec.agent.id !== config.caller && config.allowAnyCaller !== true) throw new Error('Evaluation is scoped to its owning caller')
+          const selection = {
+            ...ctx.agentDefaultModel.currentSelection(),
+            ...(args.provider === undefined ? {} : { provider: args.provider }),
+            ...(args.model === undefined ? {} : { model: args.model })
+          }
           const policy = policies[args.arm]
           const start = Date.now()
           let outcome
