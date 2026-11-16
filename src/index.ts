@@ -205,6 +205,27 @@ function fleetRow(summary: SessionSummary): InferValue<typeof SESSION_ROW_SCHEMA
   }
 }
 
+/** Compact relative age for one ISO timestamp. */
+function compactAge(iso: string): string {
+  const ageMs = Math.max(0, Date.now() - new Date(iso).getTime())
+  if (ageMs < 60_000) return Math.round(ageMs / 1000) + 's'
+  if (ageMs < 3_600_000) return Math.round(ageMs / 60_000) + 'm'
+  if (ageMs < 86_400_000) return Math.round(ageMs / 3_600_000) + 'h'
+  return Math.round(ageMs / 86_400_000) + 'd'
+}
+
+/** Parse a bounded recency window like 30s, 5m, 2h, 1d into milliseconds. */
+function parseWithin(value: string): number {
+  const match = /^(\d+)(s|m|h|d)$/.exec(value)
+  const digits = match?.[1]
+  const unit = match?.[2]
+  if (digits === undefined || unit === undefined || digits.length > 9) throw new Error(`updated_within must look like 30s, 5m, 2h or 1d, got ${value}`)
+  const ms = unit === 's' ? 1_000 : unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000
+  return Number(digits) * ms
+}
+
+/** Render one compact fleet line: id | state | age | title | cwd-tail. */
+
 /** Whether one value is a positive safe integer within `max`. */
 function positiveInt(value: number | undefined, max: number): boolean {
   return value === undefined || (Number.isSafeInteger(value) && value >= 1 && value <= max)
@@ -238,9 +259,37 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
             },
             limit: { type: 'integer', description: `Maximum rows to return, 1 through ${config.maxListRows}. Defaults to ${Math.min(20, config.maxListRows)}.` },
             cwd: { type: 'string', description: 'Only sessions whose recorded working directory starts with this absolute path.' },
+            status: { type: 'string', description: 'Filter by state: running (executing now) or idle.', enum: ['running', 'idle'] },
+            updated_within: { type: 'string', description: 'Only sessions updated within this window, e.g. 30m, 2h, 1d. Units: s, m, h, d.' },
+            order: { type: 'string', description: 'Sort by most recent update (default) or sessionId.', enum: ['updated', 'id'] },
+            view: { type: 'string', description: 'compact renders one pipe-delimited line per session instead of JSON objects.', enum: ['compact'] },
             cursor: { type: 'string', description: 'Opaque nextCursor from the same query, cwd, and limit. Restart without it if the listing changes.' }
           },
-          output: jsonOutput(LIST_VALUE_SCHEMA),
+          output: {
+            schema: LIST_VALUE_SCHEMA,
+            render: (args: { view?: string }, value: InferValue<typeof LIST_VALUE_SCHEMA>) => [
+              {
+                type: 'text',
+                text:
+                  args.view === 'compact'
+                    ? 'sessions:\n' +
+                      value.sessions
+                        .map(row =>
+                          [
+                            row.sessionId,
+                            row.running ? 'running' : 'idle',
+                            compactAge(row.updatedAt),
+                            (row.title ?? '').slice(0, 40) + (row.cwd === undefined ? '' : ' …/' + row.cwd.split('/').filter(Boolean).slice(-2).join('/'))
+                          ]
+                            .filter(part => part.length > 0)
+                            .join(' | ')
+                        )
+                        .join('\n') +
+                      (value.hasMore ? '\nhasMore: true' : '')
+                    : JSON.stringify(value)
+              }
+            ]
+          },
           async execute(args, exec) {
             callingAgent(exec.agent, 'list_sessions')
             if (!positiveInt(args.limit, config.maxListRows)) {
@@ -248,13 +297,17 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
             }
             try {
               const query = args.query === undefined ? undefined : literalQuery(args.query).toLowerCase()
+              const withinMs = args.updated_within === undefined ? undefined : parseWithin(args.updated_within)
+              if (args.order !== undefined && args.order !== 'updated' && args.order !== 'id') throw new Error('order must be updated or id')
               const { items } = await ctx.sessionController.list({}, exec.signal)
               const visible = config.includeSubagents ? items : items.filter(row => row.origin !== 'subagent')
               const prefix = args.cwd
+              const now = Date.now()
               const filtered = visible
                 .filter(row => prefix === undefined || row.cwd?.startsWith(prefix))
                 .filter(row => query === undefined || (typeof row.projections?.values.title === 'string' && row.projections.values.title.toLowerCase().includes(query)))
-                .sort((a, b) => b.updatedAt - a.updatedAt || a.sessionId.localeCompare(b.sessionId))
+                .filter(row => (args.status === undefined || row.running === (args.status === 'running')) && (withinMs === undefined || now - row.updatedAt <= withinMs))
+                .sort((a, b) => (args.order === 'id' ? a.sessionId.localeCompare(b.sessionId) : b.updatedAt - a.updatedAt) || a.sessionId.localeCompare(b.sessionId))
               const limit = args.limit ?? Math.min(20, config.maxListRows)
               const page = sessionListPage(filtered, limit, { cwd: prefix, query }, args.cursor)
               return {
