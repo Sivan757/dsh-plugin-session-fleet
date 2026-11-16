@@ -2,7 +2,7 @@
 import { expect, it } from 'vitest'
 import { SessionId, SessionSeq, type SessionEvent } from '@deepseek-ai/dsh-session'
 import { ToolCallId, createToolResultMessage } from '@deepseek-ai/dsh-llm'
-import { preparePeerMessage, revisePeerMessage, reframePeerMessage, peerMessageSummary, type PeerMessageInput } from '../src/coordination.ts'
+import { PEER_MESSAGE_SCHEMA, preparePeerMessage, revisePeerMessage, reframePeerMessage, peerMessageSummary, type PeerMessageInput } from '../src/coordination.ts'
 
 const a = SessionId('session-a')
 const b = SessionId('session-b')
@@ -89,11 +89,24 @@ it('rejects references received from another peer or a message that was never re
   expect(() => preparePeerMessage(b, a, reply, 20000)).toThrow('reply_to')
 })
 
+it.each(['accept', 'release'])('does not offer next in the %s tool input', kind => {
+  const branches = PEER_MESSAGE_SCHEMA.oneOf.filter(branch => branch.type === 'object' && branch.properties.kind.enum.some(value => value === kind))
+  expect(branches).toHaveLength(1)
+  expect(branches[0]!.properties).not.toHaveProperty('next')
+})
+
+it.each(['block', 'update', 'complete'])('keeps next available for an actionable %s reply', kind => {
+  const branches = PEER_MESSAGE_SCHEMA.oneOf.filter(branch => branch.type === 'object' && branch.properties.kind.enum.some(value => value === kind))
+  expect(branches).toHaveLength(1)
+  expect(branches[0]!.properties).toHaveProperty('next')
+})
+
 it('rejects acknowledgements of acknowledgements and contradictory reply requests on acceptance', () => {
   const offered = propose()
   const accepted = preparePeerMessage(b, a, { kind: 'accept', reply_to: offered.id, summary: 'Agreed' }, 20000, received(offered))
   expect(() => preparePeerMessage(a, b, { kind: 'accept', reply_to: accepted.id, summary: 'Thanks' }, 20000, received(accepted))).toThrow('proposal or handoff')
-  expect(() => preparePeerMessage(b, a, { kind: 'accept', reply_to: offered.id, summary: 'Agreed', next: 'Please acknowledge' }, 20000, received(offered))).toThrow('next')
+  const invalid = { kind: 'accept', reply_to: offered.id, summary: 'Agreed', next: 'Please acknowledge' } as const
+  expect(() => preparePeerMessage(b, a, invalid, 20000, received(offered))).toThrow('next')
 })
 
 it('allows only the stated owner to report completion or release', () => {
