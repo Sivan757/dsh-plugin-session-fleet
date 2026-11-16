@@ -1,7 +1,7 @@
 /** Scoped model-facing tools for discovering, reading, creating, and messaging DSH sessions. */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { literalQuery, sessionListPage, SearchContinuations } from './discovery.ts'
+import { literalQuery, SearchContinuations } from './discovery.ts'
 import { SessionQueryError } from '@deepseek-ai/dsh-session-query'
 import { TranscriptStore } from './transcript.ts'
 import { INSPECT_OUTPUT_SCHEMA, inspectParameters, inspectSession } from './inspection.ts'
@@ -108,7 +108,7 @@ const LIST_VALUE_SCHEMA = {
     sessions: { type: 'array', required: true, items: SESSION_ROW_SCHEMA },
     total: { type: 'integer', required: true },
     hasMore: { type: 'boolean', required: true },
-    nextCursor: { type: 'string' },
+    nextOffset: { type: 'integer' },
     hiddenSubagentSessions: { type: 'integer' }
   }
 } as const
@@ -263,7 +263,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
             updated_within: { type: 'string', description: 'Only sessions updated within this window, e.g. 30m, 2h, 1d. Units: s, m, h, d.' },
             order: { type: 'string', description: 'Sort by most recent update (default) or sessionId.', enum: ['updated', 'id'] },
             view: { type: 'string', description: 'compact renders one pipe-delimited line per session instead of JSON objects.', enum: ['compact'] },
-            cursor: { type: 'string', description: 'Opaque nextCursor from the same query, cwd, and limit. Restart without it if the listing changes.' }
+            offset: { type: 'integer', description: 'Zero-based row offset for continuation. Defaults to 0; pass nextOffset from a previous page.' }
           },
           output: {
             schema: LIST_VALUE_SCHEMA,
@@ -285,7 +285,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
                             .join(' | ')
                         )
                         .join('\n') +
-                      (value.hasMore ? '\nhasMore: true' : '')
+                      (value.hasMore && value.nextOffset !== undefined ? '\nnextOffset: ' + value.nextOffset : '')
                     : JSON.stringify(value)
               }
             ]
@@ -295,6 +295,10 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
             if (!positiveInt(args.limit, config.maxListRows)) {
               throw new Error(`limit must be an integer from 1 through ${config.maxListRows}`)
             }
+            if (args.offset !== undefined && (!Number.isSafeInteger(args.offset) || args.offset < 0)) {
+              throw new Error('offset must be a non-negative integer')
+            }
+            const offset: number = args.offset ?? 0
             try {
               const query = args.query === undefined ? undefined : literalQuery(args.query).toLowerCase()
               const withinMs = args.updated_within === undefined ? undefined : parseWithin(args.updated_within)
@@ -309,12 +313,13 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
                 .filter(row => (args.status === undefined || row.running === (args.status === 'running')) && (withinMs === undefined || now - row.updatedAt <= withinMs))
                 .sort((a, b) => (args.order === 'id' ? a.sessionId.localeCompare(b.sessionId) : b.updatedAt - a.updatedAt) || a.sessionId.localeCompare(b.sessionId))
               const limit = args.limit ?? Math.min(20, config.maxListRows)
-              const page = sessionListPage(filtered, limit, { cwd: prefix, query }, args.cursor)
+              const page = filtered.slice(offset, offset + limit)
+              const hasMore = offset + page.length < filtered.length
               return {
-                sessions: page.rows.map(fleetRow),
+                sessions: page.map(fleetRow),
                 total: filtered.length,
-                hasMore: page.hasMore,
-                ...(page.nextCursor === undefined ? {} : { nextCursor: page.nextCursor }),
+                hasMore,
+                ...(hasMore ? { nextOffset: offset + page.length } : {}),
                 ...(items.length === visible.length ? {} : { hiddenSubagentSessions: items.length - visible.length })
               }
             } catch (error: unknown) {
@@ -350,6 +355,9 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
                 'Opaque nextCursor from the identical query, cwd, time filters, and limit. Continues live results without repeating sessions; new matches may appear. Restart without it after expiry.'
             }
           },
+          // The provider may build or reconcile its index inside this call; a
+          // 30s budget aborts that work on a large history and never converges.
+          timeoutMs: 180_000,
           output: jsonOutput(SEARCH_VALUE_SCHEMA),
           async execute(args, exec) {
             const caller = callingAgent(exec.agent, 'search_sessions')

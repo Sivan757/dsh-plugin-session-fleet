@@ -122,7 +122,7 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   expect(new Set([...found.results, ...next.results].map(row => row.sessionId))).toEqual(new Set([inherited.sessionId, second.sessionId]))
   expect(found.results[0].seq).toBeTypeOf('number')
   const listed = await execute('list_sessions', { cwd: workspace.path, limit: 1 })
-  const listedAgain = await execute('list_sessions', { cwd: workspace.path, limit: 1, cursor: listed.nextCursor })
+  const listedAgain = await execute('list_sessions', { cwd: workspace.path, limit: 1, offset: listed.nextOffset })
   expect(listedAgain.sessions[0].sessionId).not.toBe(listed.sessions[0].sessionId)
   const actualPages: string[] = []
   const request = { query: 'smoke message', cwd: workspace.path, limit: 1 }

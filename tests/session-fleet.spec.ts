@@ -204,18 +204,19 @@ describe('fleet location and list boundaries', () => {
 })
 
 describe('fleet discovery continuation', () => {
-  it('walks all ordinary sessions without repeats and rejects changed scopes', async () => {
+  it('walks all ordinary sessions without repeats', async () => {
     const { ctx, lead } = await setup()
     const first = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 1 })))
-    const second = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 1, cursor: first.nextCursor })))
-    const third = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 1, cursor: second.nextCursor })))
+    const second = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 1, offset: first.nextOffset })))
+    const third = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 1, offset: second.nextOffset })))
     expect(new Set([first, second, third].flatMap(page => page.sessions.map((row: { sessionId: string }) => row.sessionId)))).toEqual(
       new Set(['fleet-lead', 'fleet-other', 'fleet-foreign'])
     )
+    expect(second.nextOffset).toBe(2)
     expect(third.hasMore).toBe(false)
-    expect(third.nextCursor).toBeUndefined()
-    expectToolError(await execute(ctx, lead, 'list_sessions', { cwd: '/other-scope', limit: 1, cursor: first.nextCursor }), 'changed')
-    expectToolError(await execute(ctx, lead, 'list_sessions', { cursor: '%' }), 'Invalid list cursor')
+    expect(third.nextOffset).toBeUndefined()
+    expectToolError(await execute(ctx, lead, 'list_sessions', { offset: -1 }), 'non-negative')
+    expect(JSON.parse(text(await execute(ctx, lead, 'list_sessions', { offset: 99 }))).sessions).toEqual([])
   })
 
   it('filters list_sessions by running status and recency', async () => {
@@ -325,14 +326,14 @@ describe('history retrieval without a full-text index', () => {
     vi.spyOn(ctx.sessionController, 'list').mockResolvedValue({ items: rows })
     const nativeSearch = vi.spyOn(ctx.sessionQuery, 'searchSessions').mockRejectedValue(new SessionQueryError('index disabled', 'SESSION_QUERY_SEARCH_DISABLED'))
     const legacy: string[] = []
-    let cursor: string | undefined
+    let offset: number | undefined
     let legacyCalls = 0
     do {
-      const page = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 50, ...(cursor === undefined ? {} : { cursor }) })))
+      const page = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 50, ...(offset === undefined ? {} : { offset }) })))
       legacyCalls++
       legacy.push(...page.sessions.filter((row: { title?: string }) => row.title?.includes('部署')).map((row: { sessionId: string }) => row.sessionId))
-      cursor = page.nextCursor
-    } while (cursor !== undefined)
+      offset = page.nextOffset
+    } while (offset !== undefined)
     const filtered = await execute(ctx, lead, 'list_sessions', { query: '部署', limit: 50 })
     expect(filtered.isError, text(filtered)).not.toBe(true)
     const page = JSON.parse(text(filtered))
@@ -344,7 +345,7 @@ describe('history retrieval without a full-text index', () => {
     expect(nativeSearch).not.toHaveBeenCalled()
   })
 
-  it('binds title cursors to the query even when both queries match the same rows', async () => {
+  it('applies the query filter before slicing', async () => {
     const { ctx, lead } = await setup()
     const { items } = await ctx.sessionController.list({}, SIGNAL)
     vi.spyOn(ctx.sessionController, 'list').mockResolvedValue({
@@ -352,11 +353,10 @@ describe('history retrieval without a full-text index', () => {
     })
     const args = { query: '  dEpLoY  ', cwd: lead.session.header.cwd, limit: 1 }
     const first = JSON.parse(text(await execute(ctx, lead, 'list_sessions', args)))
-    const next = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { ...args, cursor: first.nextCursor })))
+    const next = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { ...args, offset: first.nextOffset })))
     expect(first.total).toBe(2)
     expect(next.hasMore).toBe(false)
     expect(next.sessions[0].sessionId).not.toBe(first.sessions[0].sessionId)
-    expectToolError(await execute(ctx, lead, 'list_sessions', { ...args, query: 'service', cursor: first.nextCursor }), 'changed')
     expectToolError(await execute(ctx, lead, 'list_sessions', { query: '   ' }), 'query must contain')
     expectToolError(await execute(ctx, lead, 'list_sessions', { query: 'x'.repeat(501) }), 'query must contain')
   })
