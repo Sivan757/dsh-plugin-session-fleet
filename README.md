@@ -12,6 +12,10 @@ dsh plugin --profile <profile> add dsh-plugin-session-fleet
 
 The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conservative defaults. Enable **Session fleet** in the Plugins page after install.
 
+## Unreleased changes since 0.5.0
+
+The coordination trigger now leads the injected policy: when another session’s unfinished work is known or suspected, shared operations (touching its files, using the shared Git index, whole-repository formatting or validation, remounting a shared runtime, exclusive resources) require discover → inspect → propose → agreement, and none of them runs in parallel with that check. `send_to_session.message` now presents the structured objects before the plain-string branch, and its description asks for an object with `kind` instead of JSON-encoded text. The `accept` and `release` branches no longer expose a `next` property in the tool schema; runtime behavior is unchanged (`next` remains available on `block`, `update`, and `complete`). A model-behavior evaluation suite lives in `evals/` (see Development).
+
 ## Upgrade from 0.4.0
 
 Version 0.5.0 adds pending-message management and readable inspection results. Structured coordination defaults to next-step delivery (`steer`), while strings retain next-turn delivery (`queue`). Explicit `delivery` overrides the default. Read mode adds bounded top-level `text` with clipping metadata and keeps the complete original `event`. `manage_session_inbox` adds inspection, revision-checked replacement and withdrawal of pending peer input. Send receipts now include a `revision`. Queue previews show the message kind, sender hint and summary. The published 0.4.0 release defaults every message to `queue` and includes neither these readable fields nor pending-message management.
@@ -34,7 +38,7 @@ Inspection defaults to an outline with native detail calls. Request `transcript:
 - `search_sessions` searches indexed current user and assistant messages after restricting results to Host-authorized sessions. When full-text search is disabled, the error provides a `list_sessions` title-query example. It accepts `cwd`, ISO 8601 `after`/`before`, `limit`, and `cursor`. Hits include a bounded snippet, matching `seq`, working directory, state, activity, and an existing title hint when available.
 - `inspect_session` defaults to `mode: "outline"`: a clipped outline, an optional native `source.location`, and executable `detailAccess` examples. Use `mode: "search"` with `query` to find events in that session, then `mode: "read"` with `seq` to read top-level text, the complete original event and bounded neighboring summaries. Use `mode: "calls"` to navigate tool inputs, results, and failures without loading their bodies. Set `transcript: true` only in outline mode for the existing private text projection.
 - `manage_session_inbox` lists pending peer input without starting the target, or replaces/withdraws one pending occurrence with its native id and expected revision. It protects human input and consumed history. See pending-message management below.
-- `create_session` creates an independent ordinary conversation and accepts either an explicit `cwd` or an explicit `workspace_id`. Only when both are omitted does it inherit the caller’s workspace, falling back to the caller’s recorded working directory.
+- `create_session` creates an independent ordinary conversation and accepts either an explicit `cwd` or an explicit `workspace_id`. The created session is attached to a workspace so it appears in the session list: an explicit `cwd` attaches to an existing workspace for that path (never the caller’s when the path differs), and with neither parameter it inherits the caller’s workspace, falling back to the caller’s recorded working directory.
 - `send_to_session` delivers peer input through the native inbox and returns the effective `delivery`, a stable `messageId`, its `revision`, `accepted`, `persistence` (`acknowledged` or `unknown`), and `retrySafe: false`. The receipt’s `accepted` flag means queue admission, not the separate coordination decision or task completion. A missing or failed flush acknowledgement produces an unknown receipt with an inspection warning, because the message may already have arrived. An enqueue exception likewise reports its message ID and an unknown outcome.
 
 Both discovery tools return `hasMore` and an opaque `nextCursor` when more results exist. Pass it as `cursor` with identical filters and limit. Lists are ordered by activity and reject a cursor if the listing changes. Search is a live traversal: every page resolves Host authorization again and excludes already returned session IDs. New matches may appear; this is not one frozen corpus snapshot. Search handles expire, may be evicted by capacity or unload, and remember at most `searchCursorMaxSessions` IDs. Narrow cwd or time filters if that bound is reached. Titles are optional projection hints. Search preserves the Host provider’s tokenizer and page-size limits.
@@ -156,9 +160,14 @@ Indexed full-text search keeps its provider’s word/phrase tokenizer. Two-chara
 pnpm install
 pnpm run check:refactor   # host support window, typecheck, lint, prettier
 pnpm run test             # vitest run
+pnpm run test:evals       # graders for the model-behavior replay fixtures
 pnpm run build            # declarations plus the bundled entry
 ```
 
 Requires Node.js 22 or later.
 
 The behavior suite uses real agents with JSONL persistence. A YAML Loader smoke also runs the real Session Controller, workspace registry, JSON storage, queue delivery, inspection, and disposal. The model adapter and unused image/GUI transport are test doubles.
+
+### Model-choice evaluation
+
+`evals/` measures whether a model actually contacts a peer before a shared operation, without any human reminder. `cases.json` holds replayed scenarios distilled from real parallel-session incidents: two positive cases (foreign files failing repository-wide formatting; a shared index and documents with an idle-looking peer) and one negative case (an independent short read that must not trigger contact). `runner.mjs` replays each case through the native `llm.stream` with a frozen toolset (`evals/tools.json`) and simulated read-only results; the grader requires a real `inspect_session` followed by a structured `propose` object before any shared `workspace_operation`, and requires no contact for the negative case. `baseline-policy.txt` pins the 0.5.0 policy for comparison; `none` is the no-plugin baseline. `evals/host.mjs` exposes the runner as a session-scoped `eval_fleet_coordination` tool (temporary bundle; see `tsdown.config.ts`). Run `node --test evals/runner.test.mjs` for grader self-checks; real-model runs are manual because they spend tokens and need a live host.

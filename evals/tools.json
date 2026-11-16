@@ -1,0 +1,104 @@
+[
+  {
+    "name": "read",
+    "description": "Read a UTF-8 text file and return line-numbered content.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "file_path": {
+          "type": "string",
+          "description": "Path to read, resolved by the filesystem backend."
+        },
+        "offset": {
+          "type": "number",
+          "description": "1-based first line to return. Defaults to 1."
+        },
+        "limit": {
+          "type": "number",
+          "description": "Maximum number of lines to return. Defaults to 2000."
+        }
+      },
+      "required": ["file_path"]
+    }
+  },
+  {
+    "name": "list_sessions",
+    "description": "Find Host-visible DSH sessions by title or list them with status, activity time, and working directory, without starting them.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "query": {
+          "type": "string",
+          "description": "Optional literal title substring, case-insensitive, 1–500 UTF-16 code units. Works without a full-text index. Omit to list all sessions."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Maximum rows to return, 1 through 50. Defaults to 20."
+        },
+        "cwd": {
+          "type": "string",
+          "description": "Only sessions whose recorded working directory starts with this absolute path."
+        },
+        "cursor": {
+          "type": "string",
+          "description": "Opaque nextCursor from the same query, cwd, and limit. Restart without it if the listing changes."
+        }
+      }
+    }
+  },
+  {
+    "name": "inspect_session",
+    "description": "Inspect a session and its source, search events, list tool calls and failures, or read exact raw evidence without starting it. Returns follow-up calls.",
+    "parameters": {
+      "type": "object",
+      "properties": {
+        "session_id": {
+          "type": "string",
+          "description": "Session id from list_sessions or search_sessions."
+        },
+        "mode": {
+          "type": "string",
+          "description": "Defaults to outline. Use calls for tool inputs, results and failures, search to find events, or read for readable text and the complete original event.",
+          "enum": ["outline", "search", "read", "calls"]
+        },
+        "transcript": {
+          "type": "boolean",
+          "description": "Only for outline: generate a bounded private text projection for grep. Defaults to false."
+        },
+        "query": {
+          "type": "string",
+          "description": "Required for search: word or phrase, 1–500 UTF-16 code units. Uses native literal matching when the full-text index is disabled."
+        },
+        "limit": {
+          "type": "integer",
+          "description": "Only for search or calls: maximum rows, 1 through 50. Defaults to the smaller of 20 and that maximum. Follow next for calls; narrow search queries when hasMore is true."
+        },
+        "from_seq": {
+          "type": "integer",
+          "description": "Only for calls: inclusive starting call-event sequence. Defaults to 0; follow next for continuation."
+        },
+        "until_seq": {
+          "type": "integer",
+          "description": "Only for calls: inclusive capture boundary. Defaults to the observed end; next preserves it across pages."
+        },
+        "errors_only": {
+          "type": "boolean",
+          "description": "Only for calls: return failed outer and nested calls. Defaults to false. Counts always cover the captured prefix."
+        },
+        "seq": {
+          "type": "integer",
+          "description": "Required for read: nonnegative event sequence from a search hit, call row, or outline."
+        },
+        "before": {
+          "type": "integer",
+          "description": "Only for read: preceding event summaries, 0–10. Defaults to 2."
+        },
+        "after": {
+          "type": "integer",
+          "description": "Only for read: following event summaries, 0–10. Defaults to 2."
+        }
+      },
+      "required": ["session_id"]
+    }
+  }
+]

@@ -12,6 +12,10 @@ dsh plugin --profile <profile> add dsh-plugin-session-fleet
 
 bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用保守默认值。安装后在插件页启用「会话舰队」。
 
+## 0.5.0 之后的未发布变更
+
+协作触发条件现在置于注入策略最前：当已知或怀疑另一会话存在未完成工作时，共享操作（改动对方文件、使用共享 Git 暂存区、全仓格式化或校验、重挂共享运行时、独占资源）必须完成 发现 → 检查 → 提案 → 获得同意，且不得与该检查并行执行。`send_to_session.message` 的结构化对象分支排在纯字符串之前，描述要求传入带 `kind` 的对象而非 JSON 文本。`accept` 和 `release` 分支的工具 schema 不再暴露 `next` 属性；运行时行为不变（`block`、`update`、`complete` 仍可用 `next`）。`evals/` 目录新增真实模型行为评测套件（见开发一节）。
+
 ## 从 0.4.0 升级
 
 0.5.0 新增待处理消息管理与可读检查结果。结构化协作消息默认在下一步骤投递（`steer`），字符串保持下一轮投递（`queue`）。显式 `delivery` 覆盖默认值。读取模式新增有界的顶层 `text` 和截断元数据，同时保留完整原始 `event`。`manage_session_inbox` 新增待处理对等消息的检查、版本校验更新和撤回。发送收据新增 `revision`，队列预览显示类型、发送者提示与摘要。已发布的 0.4.0 对所有消息默认使用 `queue`，不含这些可读字段或待处理消息管理。
@@ -34,7 +38,7 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 - `search_sessions`：先限定 Host 允许访问的会话，再搜索有索引的当前用户与助手消息。全文搜索被停用时，错误提供 `list_sessions` 标题查询示例。支持 `cwd`、ISO 8601 时间 `after`/`before`、`limit` 和 `cursor`；命中包含有界片段、事件 `seq`、目录、状态、活跃时间及已有标题提示。
 - `inspect_session` 默认 `mode: "outline"`，返回截断概览、宿主可提供的原始 `source.location` 和可执行的 `detailAccess` 示例。用 `mode: "search"` 与 `query` 查询会话内事件，再用 `mode: "read"` 与 `seq` 读取顶层正文、完整原始事件及有界相邻摘要。用 `mode: "calls"` 在不加载正文的情况下定位工具输入、结果和失败项。原有私有文本投影仅在概览模式显式传 `transcript: true` 时导出。
 - `manage_session_inbox`：不激活目标即可查看待处理的对等输入，也可按原生 ID 与期望版本原位更新或撤回一条待处理消息。普通用户输入与已消费历史受到保护，详见待处理消息管理。
-- `create_session`：创建独立的普通对话，接受显式 `cwd` 或 `workspace_id`，两者互斥。只有两者都省略时才继承调用者 workspace，找不到时使用调用者记录的工作目录。
+- `create_session`：创建独立的普通对话，接受显式 `cwd` 或 `workspace_id`，两者互斥。新会话会挂载到 workspace 以便出现在会话列表：显式 `cwd` 只挂载到该路径已存在的 workspace（路径不同时绝不误挂到调用者的），两者都省略时继承调用者 workspace，找不到时使用调用者记录的工作目录。
 - `send_to_session`：经原生收件箱投递对等输入，返回实际 `delivery`、稳定 `messageId`、对应 `revision`、`accepted`、`persistence`（`acknowledged` 或 `unknown`）及 `retrySafe: false`。收据的 `accepted` 只表示进入队列，不是另外一条协作接受决定，也不代表处理完成。flush 未确认或失败时仍可能已经送达，因此返回带检查提示的未知收据。入队异常也会在错误中提供消息 ID 并明确结果未知。
 
 两个发现工具均返回 `hasMore`，还有结果时提供不透明的 `nextCursor`。保持过滤参数与 limit 不变，将它作为 `cursor` 继续调用。列表按活跃时间排序，列表变化时拒绝旧游标。搜索采用动态遍历，每页重新经过宿主授权并排除已返回的会话 ID，新匹配可能出现，不承诺整个结果集来自同一冻结快照。搜索句柄会过期，也可能因容量或卸载失效，最多记住 `searchCursorMaxSessions` 个已返回 ID；达到上限时缩小目录或时间范围。标题只是可选提示。搜索保留宿主 provider 的分词与页大小限制。
@@ -154,9 +158,14 @@ await tools.send_to_session({
 pnpm install
 pnpm run check:refactor   # 宿主支持窗口、类型检查、lint、prettier
 pnpm run test             # vitest run
+pnpm run test:evals       # 模型行为回放夹具的评分器自检
 pnpm run build            # 类型声明与打包入口
 ```
 
 需要 Node.js 22 或更高版本。
 
 行为测试使用真实 agent 与 JSONL 持久化。YAML Loader 组合验证还运行真实 Session Controller、workspace registry 和 JSON 存储，覆盖创建、队列投递、检查与卸载。模型适配器及未使用的图片、GUI 传输为测试替身。
+
+### 模型选择行为评测
+
+`evals/` 度量模型在没有人工提醒时是否真的会在共享操作前联系对端。`cases.json` 是从真实并行会话事件提炼的回放场景：两个正例（他人文件未过全仓格式化；共享暂存区与文档、对端看似空闲）和一个反例（独立短读不应触发联系）。`runner.mjs` 通过原生 `llm.stream` 回放，工具集冻结在 `evals/tools.json`，只读结果为模拟值；评分要求先真实调用 `inspect_session`、再发出结构化 `propose` 对象，之后才允许共享 `workspace_operation`，反例则要求完全不联系。`baseline-policy.txt` 固定 0.5.0 策略作对照，`none` 为无插件基线。`evals/host.mjs` 将回放封装为会话级 `eval_fleet_coordination` 工具（临时 bundle，见 `tsdown.config.ts`）。评分器自检用 `node --test evals/runner.test.mjs`；真实模型运行消耗 token 且需在线宿主，手动执行。

@@ -26,14 +26,26 @@ const REPLY_SCHEMA = {
   type: 'object',
   additionalProperties: false,
   properties: {
-    kind: { type: 'string', required: true, enum: ['accept', 'block', 'update', 'complete', 'release'] },
+    kind: { type: 'string', required: true, enum: ['accept', 'release'] },
     reply_to: { type: 'string', required: true, description: 'Exact incoming coordination message id. Task, owner and scope are inherited.' },
-    summary: { type: 'string', required: true, description: 'Agreement, conflict facts, progress or result evidence, 1–2000 characters.' },
-    next: { type: 'string', description: 'A concrete new action only when a response is needed. Omit for accept and release.' }
+    summary: { type: 'string', required: true, description: 'Agreement, conflict facts, progress or result evidence, 1–2000 characters.' }
+  }
+} as const
+const ACTION_REPLY_SCHEMA = {
+  ...REPLY_SCHEMA,
+  properties: {
+    ...REPLY_SCHEMA.properties,
+    kind: { type: 'string', required: true, enum: ['block', 'update', 'complete'] },
+    next: { type: 'string', description: 'A concrete new action only when a response is needed.' }
   }
 } as const
 export const PEER_MESSAGE_SCHEMA = {
-  oneOf: [{ type: 'string', description: 'Self-contained peer input. Use a structured message for work coordination.' }, PROPOSAL_SCHEMA, REPLY_SCHEMA]
+  oneOf: [
+    PROPOSAL_SCHEMA,
+    REPLY_SCHEMA,
+    ACTION_REPLY_SCHEMA,
+    { type: 'string', description: 'Plain peer input. For work coordination pass an object with kind, not JSON-encoded text.' }
+  ]
 } as const
 export type PeerMessageInput = InferValue<typeof PEER_MESSAGE_SCHEMA>
 export interface CoordinationRecord {
@@ -126,7 +138,9 @@ function coordinate(sender: SessionId, target: SessionId, input: Exclude<PeerMes
   if (input.kind === 'accept' && parent.kind !== 'propose' && parent.kind !== 'handoff') throw new Error('accept must refer to a proposal or handoff, not another acknowledgement')
   if ((input.kind === 'complete' || input.kind === 'release') && (parent.owner !== sender || !accepted(parent, history, target, reply_to)))
     throw new Error('Completion and release require an acceptance naming the sender as owner')
-  if ((input.kind === 'accept' || input.kind === 'release') && input.next !== undefined) throw new Error('next is not allowed on accept or release; no acknowledgement is needed')
+  if ((input.kind === 'accept' || input.kind === 'release') && 'next' in input && input.next !== undefined)
+    throw new Error('next is not allowed on accept or release; no acknowledgement is needed')
+  const next = 'next' in input ? input.next : undefined
   return {
     kind: input.kind,
     task: parent.task,
@@ -134,7 +148,7 @@ function coordinate(sender: SessionId, target: SessionId, input: Exclude<PeerMes
     scope: [...parent.scope],
     summary,
     reply_to,
-    ...(input.next === undefined ? {} : { next: bounded(input.next, 'next', 1000) })
+    ...(next === undefined ? {} : { next: bounded(next, 'next', 1000) })
   }
 }
 

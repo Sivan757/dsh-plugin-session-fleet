@@ -112,7 +112,7 @@ async function setup(config: fleet.Config = {}, script: ConstructorParameters<ty
     })
   }
   ctx.provide('sessionController', stub as never)
-  ctx.provide('workspaceRegistry', { list: () => [] } as any)
+  ctx.provide('workspaceRegistry', { list: () => [], resolveByPath: async () => undefined } as any)
   const fleetFiber = await ctx.plugin(fleet, full)
   return { ctx, lead, other, foreign, fleetFiber }
 }
@@ -151,6 +151,26 @@ describe('fleet location and list boundaries', () => {
     const result = await execute(ctx, lead, 'create_session', { cwd: '/explicit-location' })
     expect(result.isError, text(result)).not.toBe(true)
     expect(JSON.parse(text(result)).sessionId).toBe('fleet-explicit')
+  })
+
+  it('attaches an explicit cwd to an existing workspace for that path', async () => {
+    const { ctx, lead } = await setup()
+    vi.spyOn(ctx.workspaceRegistry, 'resolveByPath').mockResolvedValueOnce({ id: 'ws-target', sessionIds: [] } as never)
+    const stub = ctx.sessionController as unknown as { create: ReturnType<typeof vi.fn> }
+    stub.create.mockResolvedValueOnce({ sessionId: 'fleet-attached' })
+    const result = await execute(ctx, lead, 'create_session', { cwd: '/target-location' })
+    expect(result.isError, text(result)).not.toBe(true)
+    expect(stub.create.mock.calls.at(-1)?.[0]).toEqual({ workspaceId: 'ws-target' })
+  })
+
+  it('does not attach an unknown cwd to the caller workspace', async () => {
+    const { ctx, lead } = await setup()
+    vi.spyOn(ctx.workspaceRegistry, 'list').mockReturnValueOnce([{ id: 'ws-home', sessionIds: [lead.id] } as never])
+    const stub = ctx.sessionController as unknown as { create: ReturnType<typeof vi.fn> }
+    stub.create.mockResolvedValueOnce({ sessionId: 'fleet-unattached' })
+    const result = await execute(ctx, lead, 'create_session', { cwd: '/unknown-location' })
+    expect(result.isError, text(result)).not.toBe(true)
+    expect(stub.create.mock.calls.at(-1)?.[0]).toEqual({ cwd: '/unknown-location' })
   })
 
   it('inherits the caller workspace only when neither location parameter is set', async () => {
