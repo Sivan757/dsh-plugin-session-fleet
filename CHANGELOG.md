@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.6.0...dsh-plugin-session-fleet-v0.7.0) (2026-11-16)
+
+
+### Features
+
+* filter and compact view for list_sessions ([5166c15](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/5166c15e4662bf6ac68b456c9557884817ccdf2c))
+
 ## [0.6.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.5.0...dsh-plugin-session-fleet-v0.6.0) (2026-11-16)
 
 
