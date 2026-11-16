@@ -105,3 +105,18 @@ read 保留完整 event，新增至多 8000 UTF-16 单元的顶层 text、按需
 修正（本分支）：`src/policy.ts`（新增，供提示与评测共用）把"已知或怀疑他人未完成工作时，共享操作必须 完成 发现→检查→提案→同意，且不与检查并行"置于首位；`src/coordination.ts` 拆分回复 schema，accept/release 不再暴露 `next`（运行时校验保留），结构化对象排在 oneOf 首位。
 
 评测（`evals/`）：真实 `llm.stream` 回放三个场景（他人文件未过全仓格式化 / 共享暂存区与空闲对端 / 独立短读反例），冻结工具集与模拟只读结果，评分强制"检查→结构化 propose 对象→共享操作"顺序、反例零联系。7 次真实运行（deepseek-v4.1-flash，reasoningEffort max）：反例两臂全过；正例中基线 0.5.0 策略一次发出了内容正确但 JSON 字符串编码的提案（生产 schema 会拒绝），候选策略多次"检查后直接跑共享操作"。初步判断：单靠提示措辞难以可靠触发主动联系；对象编码问题经 oneOf 重排与描述修正后待复测。样本量小（每格 1-2 次），结论为方向性。
+
+## 2026-11-16：MiniMax 评测矩阵与 UI 刷新机制验证
+
+**MiniMax-M3.1-Flash 矩阵（12+次真实回放，magpie/auto/minimax-m3.1-flash，reasoningEffort max，由子代理执行）**：
+
+| 场景                     | candidate             | baseline              | none              |
+| ------------------------ | --------------------- | --------------------- | ----------------- |
+| foreign-format           | ✅ 发现→检查→对象提案 | ❌ 检查后直接共享操作 | ❌ 同左           |
+| idle-peer-commit         | ⚠️ 首次超轮次，补跑✅ | ❌ 两次均失败         | ❌ 未联系直接操作 |
+| independent-read         | ✅ 单步 read 零联系   | ✅                    | ✅                |
+| explicit-contact-control | ❌ 两轮均未决策       | —                     | —                 |
+
+通过率 candidate 2-3/4 vs baseline 1/4 vs none 1/4。所有成功提案均为结构化对象（kind=propose，含完整 task/owner/scope/next），无 JSON 字符串编码——oneOf 重排与描述修正解决了 v4.1-flash 时代的编码问题。主要失败模式是六轮预算耗尽于反复 inspect_session（candidate 提示诱导过度检查），提示下一步应在策略中给出"足够即提案"的检查深度上限。
+
+**UI 会话列表刷新机制（ego-browser 子代理实测）**：外部直接改写 workspace.json 不触发列表更新（30 秒轮询无变化）；列表的相对时间戳与运行中徽标在无操作时持续变化，证明数据源是宿主内存事件流（workspace follow/RPC 推送）而非文件 watcher。含义：create_session 的挂载修复走宿主 sessionController 内存路径，UI 会即时刷新；任何绕过宿主直接写存储的方案对已打开 UI 无效。对照组（GUI 新建对话）因草稿占位机制未形成新条目，属中性结果。
