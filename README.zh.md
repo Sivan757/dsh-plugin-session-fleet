@@ -12,6 +12,10 @@ dsh plugin --profile <profile> add dsh-plugin-session-fleet
 
 bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用保守默认值。安装后在插件页启用「会话舰队」。
 
+## 0.5.0 之后的未发布变更
+
+协作触发条件现在置于注入策略最前：当已知或怀疑另一会话存在未完成工作时，共享操作（改动对方文件、使用共享 Git 暂存区、全仓格式化或校验、重挂共享运行时、独占资源）必须完成 发现 → 检查 → 提案 → 获得同意，且不得与该检查并行执行。`send_to_session.message` 的结构化对象分支排在纯字符串之前，描述要求传入带 `kind` 的对象而非 JSON 文本。`accept` 和 `release` 分支的工具 schema 不再暴露 `next` 属性；运行时行为不变（`block`、`update`、`complete` 仍可用 `next`）。`evals/` 目录新增真实模型行为评测套件（见开发一节）。
+
 ## 从 0.4.0 升级
 
 0.5.0 新增待处理消息管理与可读检查结果。结构化协作消息默认在下一步骤投递（`steer`），字符串保持下一轮投递（`queue`）。显式 `delivery` 覆盖默认值。读取模式新增有界的顶层 `text` 和截断元数据，同时保留完整原始 `event`。`manage_session_inbox` 新增待处理对等消息的检查、版本校验更新和撤回。发送收据新增 `revision`，队列预览显示类型、发送者提示与摘要。已发布的 0.4.0 对所有消息默认使用 `queue`，不含这些可读字段或待处理消息管理。
@@ -154,9 +158,14 @@ await tools.send_to_session({
 pnpm install
 pnpm run check:refactor   # 宿主支持窗口、类型检查、lint、prettier
 pnpm run test             # vitest run
+pnpm run test:evals       # 模型行为回放夹具的评分器自检
 pnpm run build            # 类型声明与打包入口
 ```
 
 需要 Node.js 22 或更高版本。
 
 行为测试使用真实 agent 与 JSONL 持久化。YAML Loader 组合验证还运行真实 Session Controller、workspace registry 和 JSON 存储，覆盖创建、队列投递、检查与卸载。模型适配器及未使用的图片、GUI 传输为测试替身。
+
+### 模型选择行为评测
+
+`evals/` 度量模型在没有人工提醒时是否真的会在共享操作前联系对端。`cases.json` 是从真实并行会话事件提炼的回放场景：两个正例（他人文件未过全仓格式化；共享暂存区与文档、对端看似空闲）和一个反例（独立短读不应触发联系）。`runner.mjs` 通过原生 `llm.stream` 回放，工具集冻结在 `evals/tools.json`，只读结果为模拟值；评分要求先真实调用 `inspect_session`、再发出结构化 `propose` 对象，之后才允许共享 `workspace_operation`，反例则要求完全不联系。`baseline-policy.txt` 固定 0.5.0 策略作对照，`none` 为无插件基线。`evals/host.mjs` 将回放封装为会话级 `eval_fleet_coordination` 工具（临时 bundle，见 `tsdown.config.ts`）。评分器自检用 `node --test evals/runner.test.mjs`；真实模型运行消耗 token 且需在线宿主，手动执行。

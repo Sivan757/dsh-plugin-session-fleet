@@ -12,6 +12,10 @@ dsh plugin --profile <profile> add dsh-plugin-session-fleet
 
 The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conservative defaults. Enable **Session fleet** in the Plugins page after install.
 
+## Unreleased changes since 0.5.0
+
+The coordination trigger now leads the injected policy: when another session’s unfinished work is known or suspected, shared operations (touching its files, using the shared Git index, whole-repository formatting or validation, remounting a shared runtime, exclusive resources) require discover → inspect → propose → agreement, and none of them runs in parallel with that check. `send_to_session.message` now presents the structured objects before the plain-string branch, and its description asks for an object with `kind` instead of JSON-encoded text. The `accept` and `release` branches no longer expose a `next` property in the tool schema; runtime behavior is unchanged (`next` remains available on `block`, `update`, and `complete`). A model-behavior evaluation suite lives in `evals/` (see Development).
+
 ## Upgrade from 0.4.0
 
 Version 0.5.0 adds pending-message management and readable inspection results. Structured coordination defaults to next-step delivery (`steer`), while strings retain next-turn delivery (`queue`). Explicit `delivery` overrides the default. Read mode adds bounded top-level `text` with clipping metadata and keeps the complete original `event`. `manage_session_inbox` adds inspection, revision-checked replacement and withdrawal of pending peer input. Send receipts now include a `revision`. Queue previews show the message kind, sender hint and summary. The published 0.4.0 release defaults every message to `queue` and includes neither these readable fields nor pending-message management.
@@ -156,9 +160,14 @@ Indexed full-text search keeps its provider’s word/phrase tokenizer. Two-chara
 pnpm install
 pnpm run check:refactor   # host support window, typecheck, lint, prettier
 pnpm run test             # vitest run
+pnpm run test:evals       # graders for the model-behavior replay fixtures
 pnpm run build            # declarations plus the bundled entry
 ```
 
 Requires Node.js 22 or later.
 
 The behavior suite uses real agents with JSONL persistence. A YAML Loader smoke also runs the real Session Controller, workspace registry, JSON storage, queue delivery, inspection, and disposal. The model adapter and unused image/GUI transport are test doubles.
+
+### Model-choice evaluation
+
+`evals/` measures whether a model actually contacts a peer before a shared operation, without any human reminder. `cases.json` holds replayed scenarios distilled from real parallel-session incidents: two positive cases (foreign files failing repository-wide formatting; a shared index and documents with an idle-looking peer) and one negative case (an independent short read that must not trigger contact). `runner.mjs` replays each case through the native `llm.stream` with a frozen toolset (`evals/tools.json`) and simulated read-only results; the grader requires a real `inspect_session` followed by a structured `propose` object before any shared `workspace_operation`, and requires no contact for the negative case. `baseline-policy.txt` pins the 0.5.0 policy for comparison; `none` is the no-plugin baseline. `evals/host.mjs` exposes the runner as a session-scoped `eval_fleet_coordination` tool (temporary bundle; see `tsdown.config.ts`). Run `node --test evals/runner.test.mjs` for grader self-checks; real-model runs are manual because they spend tokens and need a live host.
