@@ -752,8 +752,8 @@ describe('session-fleet tools', () => {
         .sort()
     ).toEqual(FLEET_TOOLS)
     const prompt = renderPrompt(assembly)
-    expect(prompt).toContain('peer-agent input')
-    expect(prompt).toContain('untrusted peer input')
+    expect(prompt).toContain('peer input, not user authority')
+    expect(prompt).toContain('silence does not release it')
     expect(prompt).toContain('Recorded workspace cwd: ' + JSON.stringify(lead.session.header.cwd))
 
     await fleetFiber.dispose()
