@@ -129,3 +129,16 @@ M3 对照（同一隔离 profile、真实模型、`evals/` 回放）：
 | 收敛 `inspect_session` 四模式 | 约 2 个模式、250 行 | 默认路径唯一读入口 | `search` 模式有本地回退（捕获 `SESSION_QUERY_SEARCH_DISABLED` 后本地过滤），并非死路 | **否决**：无死路径，收敛会真实降低能力 |
 
 结论：五项里只有两项（删除 search_sessions、精简策略）通过了收益/成本检验；`transcript` 因实测 26 次使用保留；协议与 inspect 收敛否决。这本身就是评估体系的价值——避免为了"看起来更简洁"而付出更高代价。
+
+## 发布结果：0.8.0
+
+| 项             | 结果                                                                                                |
+| -------------- | --------------------------------------------------------------------------------------------------- |
+| PR             | #13 `refactor!: trim Session Fleet to its evidenced surface`，CI 全绿后 squash 合并                 |
+| 版本策略       | 破坏性变更在 0.x 上按 minor 递增（新增 `bump-minor-pre-major`），未采用 Release Please 默认的 1.0.0 |
+| 发布 PR        | #15 → 合并后 tag `dsh-plugin-session-fleet-v0.8.0`                                                  |
+| npm            | 官方源 `latest: 0.8.0`，版本端点可读                                                                |
+| GitHub Release | `dsh-plugin-session-fleet-v0.8.0`，非草稿                                                           |
+| 本地           | main `4ae4689`，package.json 0.8.0，工作树干净                                                      |
+
+最终指标：工具 6→5、常驻注入 12,967→8,537 字符（−34%）、策略 4,240→901（−79%）、配置项 10→7、测试 146→135（随被删主题移除 11 个）。
