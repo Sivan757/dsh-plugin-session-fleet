@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.7.0...dsh-plugin-session-fleet-v1.0.0) (2026-11-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* search_sessions is no longer registered.
+
+### Code Refactoring
+
+* trim Session Fleet to its evidenced surface ([#13](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/13)) ([c784ee9](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/c784ee905fde1bae04e5a6b455ed1538f96cd9b7))
+
 ## [0.7.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.6.0...dsh-plugin-session-fleet-v0.7.0) (2026-11-16)
 
 
