@@ -14,6 +14,8 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 ## 0.5.0 之后的未发布变更
 
+移除 `search_sessions`：默认部署把宿主 session-query 服务挂成 `openAt: never`，该工具必然失败；而启用索引的部署本就有宿主 `session_search`，`list_sessions` 的标题查询可在无索引时覆盖发现需求。注入的协作策略从约 4,200 字符压到约 900 字符，语义不变。
+
 协作触发条件现在置于注入策略最前：当已知或怀疑另一会话存在未完成工作时，共享操作（改动对方文件、使用共享 Git 暂存区、全仓格式化或校验、重挂共享运行时、独占资源）必须完成 发现 → 检查 → 提案 → 获得同意，且不得与该检查并行执行。`send_to_session.message` 的结构化对象分支排在纯字符串之前，描述要求传入带 `kind` 的对象而非 JSON 文本。`accept` 和 `release` 分支的工具 schema 不再暴露 `next` 属性；运行时行为不变（`block`、`update`、`complete` 仍可用 `next`）。`evals/` 目录新增真实模型行为评测套件（见开发一节）。
 
 ## 从 0.4.0 升级
@@ -35,13 +37,12 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 ## 每个智能体安装的工具
 
 - `list_sessions`：列出可见会话及状态、活跃时间与工作目录，不会激活任何目标。可选 `query` 按标题做不区分大小写的字面子串匹配，接受 1–500 个 UTF-16 代码单元，不依赖全文索引。默认数量取 20 与 `maxListRows` 的较小值；`hiddenSubagentSessions` 只统计所有权隐藏，与 cwd 过滤无关。
-- `search_sessions`：先限定 Host 允许访问的会话，再搜索有索引的当前用户与助手消息。全文搜索被停用时，错误提供 `list_sessions` 标题查询示例。支持 `cwd`、ISO 8601 时间 `after`/`before`、`limit` 和 `cursor`；命中包含有界片段、事件 `seq`、目录、状态、活跃时间及已有标题提示。
 - `inspect_session` 默认 `mode: "outline"`，返回截断概览、宿主可提供的原始 `source.location` 和可执行的 `detailAccess` 示例。用 `mode: "search"` 与 `query` 查询会话内事件，再用 `mode: "read"` 与 `seq` 读取顶层正文、完整原始事件及有界相邻摘要。用 `mode: "calls"` 在不加载正文的情况下定位工具输入、结果和失败项。原有私有文本投影仅在概览模式显式传 `transcript: true` 时导出。
 - `manage_session_inbox`：不激活目标即可查看待处理的对等输入，也可按原生 ID 与期望版本原位更新或撤回一条待处理消息。普通用户输入与已消费历史受到保护，详见待处理消息管理。
 - `create_session`：创建独立的普通对话，接受显式 `cwd` 或 `workspace_id`，两者互斥。新会话会挂载到 workspace 以便出现在会话列表：显式 `cwd` 只挂载到该路径已存在的 workspace（路径不同时绝不误挂到调用者的），两者都省略时继承调用者 workspace，找不到时使用调用者记录的工作目录。
 - `send_to_session`：经原生收件箱投递对等输入，返回实际 `delivery`、稳定 `messageId`、对应 `revision`、`accepted`、`persistence`（`acknowledged` 或 `unknown`）及 `retrySafe: false`。收据的 `accepted` 只表示进入队列，不是另外一条协作接受决定，也不代表处理完成。flush 未确认或失败时仍可能已经送达，因此返回带检查提示的未知收据。入队异常也会在错误中提供消息 ID 并明确结果未知。
 
-`list_sessions` 另接受 `status`（`running`/`idle`）、`updated_within`（如 `30m`、`2h`、`1d`）、`order`（默认 `updated`，或 `id`）与 `view: "compact"`——后者为每个会话渲染一行竖线分隔文本（`id | running | 3m | 标题 …/目录/尾部`），替代 JSON 对象，是确认活跃并行会话最省 token 的方式。两个发现工具均返回 `hasMore`，还有结果时提供不透明的 `nextCursor`。保持过滤参数与 limit 不变，将它作为 `cursor` 继续调用。列表按活跃时间排序，列表变化时拒绝旧游标。搜索采用动态遍历，每页重新经过宿主授权并排除已返回的会话 ID，新匹配可能出现，不承诺整个结果集来自同一冻结快照。搜索句柄会过期，也可能因容量或卸载失效，最多记住 `searchCursorMaxSessions` 个已返回 ID；达到上限时缩小目录或时间范围。标题只是可选提示。搜索保留宿主 provider 的分词与页大小限制。
+`list_sessions` 另接受 `status`（`running`/`idle`）、`updated_within`（如 `30m`、`2h`、`1d`）、`order`（默认 `updated`，或 `id`）与 `view: "compact"`——后者为每个会话渲染一行竖线分隔文本（`id | running | 3m | 标题 …/目录/尾部`），替代 JSON 对象，是确认活跃并行会话最省 token 的方式。两个发现工具均返回 `hasMore`，还有结果时提供不透明的 `nextCursor`。保持过滤参数与 limit 不变，将它作为 `cursor` 继续调用。列表按活跃时间排序。分页直接用数字参数：传 `offset` 配 `limit`，用上一页的 `nextOffset` 继续。过滤与排序都在切片之前完成，因此每一页都对应同一过滤序列；offset 超出结果长度时返回空页。搜索采用动态遍历，每页重新经过宿主授权并排除已返回的会话 ID，新匹配可能出现，不承诺整个结果集来自同一冻结快照。搜索句柄会过期，也可能因容量或卸载失效，最多记住 `searchCursorMaxSessions` 个已返回 ID；达到上限时缩小目录或时间范围。标题只是可选提示。搜索保留宿主 provider 的分词与页大小限制。
 
 投递消息携带专用的 `session-fleet` 来源标识与对等输入提示，用于向目标表明这是对等智能体输入。确实需要响应时，对端主动调用 `send_to_session` 回复发送者。插件不会自动转发最终回答或生成确认消息。
 
@@ -104,14 +105,6 @@ await tools.send_to_session({
 `source.status` 为 `located`、`unavailable` 或 `error`。定位成功时原样转交后端的 `{ kind, path }`，不根据会话 ID 拼接路径。`revision` 是可选的不透明存储标记。较旧宿主或某些后端可能不提供位置。定位异常会在 `source.reason` 中明确报告，概览仍可使用。路径可能指向目录或文件，也不保证包含最新内存尾部；请使用按会话 ID 的详情调用，让宿主负责解码与实时读取。读取不会激活 Agent 或强制 flush。
 
 读取模式保留完整目标事件，不按字节截断。可在程序化工具调用中只选取需要的字段，或配置 DSH 通用 spill 策略限制较大结果的内联显示。有界概览、搜索片段、相邻摘要和可选 TSV 导出各有用途。`transcript: true` 仍返回 `transcriptPath`、`transcriptLines`、`transcriptBytes`、`transcriptTruncated` 与 `transcriptExpiresAt`。
-
-## 全文索引停用时的检索
-
-先按标题关键词定位候选，例如 `list_sessions({ query: "部署" })`。`total` 统计匹配的可见会话。标题匹配使用宿主已有的投影提示，沿用分页与子会话规则。
-
-选定会话后，即使宿主返回 `SESSION_QUERY_SEARCH_DISABLED`，仍可用 `inspect_session({ session_id, mode: "search", query })` 定位证据。它对这一个原生快照复用宿主 SDK 的语义文档和字面过滤函数。结果带 `searchMode: "literal"`，不区分大小写、允许空白差异，并按事件顺序返回。片段保留匹配位置附近的文本，再按 `seq` 读取完整原文。其他后端故障仍作为错误返回。
-
-这条路径不新增索引，也不扫描其他会话的消息正文。标题没有匹配不代表会话正文没有提到该主题，可换用其他标题关键词，或在全文索引可用时搜索消息。
 
 ## 兼容范围
 

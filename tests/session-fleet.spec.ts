@@ -137,7 +137,7 @@ function expectToolError(result: Awaited<ReturnType<typeof execute>>, fragment: 
   expect(text(result)).toContain(fragment)
 }
 
-const FLEET_TOOLS = ['list_sessions', 'search_sessions', 'inspect_session', 'manage_session_inbox', 'create_session', 'send_to_session'].sort()
+const FLEET_TOOLS = ['list_sessions', 'inspect_session', 'manage_session_inbox', 'create_session', 'send_to_session'].sort()
 
 describe('fleet location and list boundaries', () => {
   it('uses an explicit cwd without inheriting the caller workspace', async () => {
@@ -204,18 +204,19 @@ describe('fleet location and list boundaries', () => {
 })
 
 describe('fleet discovery continuation', () => {
-  it('walks all ordinary sessions without repeats and rejects changed scopes', async () => {
+  it('walks all ordinary sessions without repeats', async () => {
     const { ctx, lead } = await setup()
     const first = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 1 })))
-    const second = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 1, cursor: first.nextCursor })))
-    const third = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 1, cursor: second.nextCursor })))
+    const second = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 1, offset: first.nextOffset })))
+    const third = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 1, offset: second.nextOffset })))
     expect(new Set([first, second, third].flatMap(page => page.sessions.map((row: { sessionId: string }) => row.sessionId)))).toEqual(
       new Set(['fleet-lead', 'fleet-other', 'fleet-foreign'])
     )
+    expect(second.nextOffset).toBe(2)
     expect(third.hasMore).toBe(false)
-    expect(third.nextCursor).toBeUndefined()
-    expectToolError(await execute(ctx, lead, 'list_sessions', { cwd: '/other-scope', limit: 1, cursor: first.nextCursor }), 'changed')
-    expectToolError(await execute(ctx, lead, 'list_sessions', { cursor: '%' }), 'Invalid list cursor')
+    expect(third.nextOffset).toBeUndefined()
+    expectToolError(await execute(ctx, lead, 'list_sessions', { offset: -1 }), 'non-negative')
+    expect(JSON.parse(text(await execute(ctx, lead, 'list_sessions', { offset: 99 }))).sessions).toEqual([])
   })
 
   it('filters list_sessions by running status and recency', async () => {
@@ -246,69 +247,6 @@ describe('fleet discovery continuation', () => {
     expect(rendered).not.toContain('"sessionId"')
     expect((rendered.match(/\n/g) || []).length).toBeGreaterThanOrEqual(1)
   })
-
-  it('filters query hits against the current authorized summary list', async () => {
-    const { ctx, lead } = await setup()
-    vi.spyOn(ctx.sessionController, 'list').mockResolvedValueOnce({ items: [] })
-    const provider = vi.spyOn(ctx.sessionQuery, 'searchSessions')
-    const result = JSON.parse(text(await execute(ctx, lead, 'search_sessions', { query: 'needle' })))
-    expect(result).toEqual({ results: [], hasMore: false })
-    expect(provider).not.toHaveBeenCalled()
-  })
-
-  it('does not expose hits for a session missing from the authorized summary', async () => {
-    const { ctx, lead } = await setup()
-    const original = await ctx.sessionController.list({}, SIGNAL)
-    vi.spyOn(ctx.sessionController, 'list').mockResolvedValueOnce({ items: original.items.filter(row => row.sessionId !== lead.id) })
-    const result = JSON.parse(text(await execute(ctx, lead, 'search_sessions', { query: 'needle' })))
-    expect(result.results).toEqual([])
-  })
-
-  it('binds continuation to the caller and request while rechecking authorization per page', async () => {
-    const { ctx, lead, other } = await setup()
-    const sample = await ctx.sessionQuery.searchSessions({ query: 'needle', limit: 1 })
-    const provider = vi.spyOn(ctx.sessionQuery, 'searchSessions').mockResolvedValueOnce({ ...sample, nextCursor: SessionSearchCursor('native-next') })
-    const args = { query: 'needle', cwd: lead.session.header.cwd, limit: 1 }
-    const first = JSON.parse(text(await execute(ctx, lead, 'search_sessions', args)))
-    expect(first.nextCursor).not.toBe('native-next')
-    expect(provider.mock.calls[0]?.[0].cursor).toBeUndefined()
-    expectToolError(await execute(ctx, other, 'search_sessions', { ...args, cursor: first.nextCursor }), 'mismatched')
-    expectToolError(await execute(ctx, lead, 'search_sessions', { ...args, query: 'changed', cursor: first.nextCursor }), 'mismatched')
-    const authorized = await ctx.sessionController.list({}, SIGNAL)
-    vi.spyOn(ctx.sessionController, 'list').mockResolvedValueOnce({ items: authorized.items.filter(row => row.sessionId === lead.id) })
-    expect(JSON.parse(text(await execute(ctx, lead, 'search_sessions', { ...args, cursor: first.nextCursor })))).toEqual({ results: [], hasMore: false })
-    expect(provider).toHaveBeenCalledTimes(1)
-  })
-
-  it('limits IDs remembered by a search traversal before requesting another provider page', async () => {
-    const { ctx, lead } = await setup({ searchCursorMaxSessions: 1 })
-    const sample = await ctx.sessionQuery.searchSessions({ query: 'needle', limit: 1 })
-    const provider = vi.spyOn(ctx.sessionQuery, 'searchSessions').mockResolvedValueOnce({ ...sample, nextCursor: SessionSearchCursor('native-next') })
-    const args = { query: 'needle', cwd: lead.session.header.cwd, limit: 1 }
-    const first = JSON.parse(text(await execute(ctx, lead, 'search_sessions', args)))
-    expectToolError(await execute(ctx, lead, 'search_sessions', { ...args, cursor: first.nextCursor }), 'continuation limit')
-    expect(provider).toHaveBeenCalledTimes(1)
-  })
-
-  it('validates time windows and passes the current scope to the query provider', async () => {
-    const { ctx, lead } = await setup()
-    const provider = vi.spyOn(ctx.sessionQuery, 'searchSessions')
-    const args = { query: 'needle', cwd: lead.session.header.cwd, after: '2026-01-01T00:00:00Z', before: '2026-12-31T00:00:00Z', limit: 1 }
-    await execute(ctx, lead, 'search_sessions', args)
-    expect(provider.mock.calls[0]?.[0]).toMatchObject({
-      query: 'needle',
-      limit: 1,
-      sessionFilters: [{ kind: 'id', values: ['fleet-lead', 'fleet-other'] }],
-      eventFilters: [
-        { kind: 'type', values: ['user/message', 'assistant/message'] },
-        { kind: 'surface', values: ['current'] },
-        { kind: 'time', from: Date.parse(args.after), to: Date.parse(args.before) }
-      ]
-    })
-    expectToolError(await execute(ctx, lead, 'search_sessions', { query: 'needle', after: 'bad' }), 'ISO 8601')
-    expectToolError(await execute(ctx, lead, 'search_sessions', { query: 'needle', after: args.before, before: args.after }), 'later than')
-    expectToolError(await execute(ctx, lead, 'search_sessions', { query: 'needle', limit: 0 }), 'limit must')
-  })
 })
 
 describe('history retrieval without a full-text index', () => {
@@ -325,14 +263,14 @@ describe('history retrieval without a full-text index', () => {
     vi.spyOn(ctx.sessionController, 'list').mockResolvedValue({ items: rows })
     const nativeSearch = vi.spyOn(ctx.sessionQuery, 'searchSessions').mockRejectedValue(new SessionQueryError('index disabled', 'SESSION_QUERY_SEARCH_DISABLED'))
     const legacy: string[] = []
-    let cursor: string | undefined
+    let offset: number | undefined
     let legacyCalls = 0
     do {
-      const page = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 50, ...(cursor === undefined ? {} : { cursor }) })))
+      const page = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { limit: 50, ...(offset === undefined ? {} : { offset }) })))
       legacyCalls++
       legacy.push(...page.sessions.filter((row: { title?: string }) => row.title?.includes('部署')).map((row: { sessionId: string }) => row.sessionId))
-      cursor = page.nextCursor
-    } while (cursor !== undefined)
+      offset = page.nextOffset
+    } while (offset !== undefined)
     const filtered = await execute(ctx, lead, 'list_sessions', { query: '部署', limit: 50 })
     expect(filtered.isError, text(filtered)).not.toBe(true)
     const page = JSON.parse(text(filtered))
@@ -344,7 +282,7 @@ describe('history retrieval without a full-text index', () => {
     expect(nativeSearch).not.toHaveBeenCalled()
   })
 
-  it('binds title cursors to the query even when both queries match the same rows', async () => {
+  it('applies the query filter before slicing', async () => {
     const { ctx, lead } = await setup()
     const { items } = await ctx.sessionController.list({}, SIGNAL)
     vi.spyOn(ctx.sessionController, 'list').mockResolvedValue({
@@ -352,22 +290,12 @@ describe('history retrieval without a full-text index', () => {
     })
     const args = { query: '  dEpLoY  ', cwd: lead.session.header.cwd, limit: 1 }
     const first = JSON.parse(text(await execute(ctx, lead, 'list_sessions', args)))
-    const next = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { ...args, cursor: first.nextCursor })))
+    const next = JSON.parse(text(await execute(ctx, lead, 'list_sessions', { ...args, offset: first.nextOffset })))
     expect(first.total).toBe(2)
     expect(next.hasMore).toBe(false)
     expect(next.sessions[0].sessionId).not.toBe(first.sessions[0].sessionId)
-    expectToolError(await execute(ctx, lead, 'list_sessions', { ...args, query: 'service', cursor: first.nextCursor }), 'changed')
     expectToolError(await execute(ctx, lead, 'list_sessions', { query: '   ' }), 'query must contain')
     expectToolError(await execute(ctx, lead, 'list_sessions', { query: 'x'.repeat(501) }), 'query must contain')
-  })
-
-  it('explains the title-discovery recovery when cross-session full-text search is disabled', async () => {
-    const { ctx, lead } = await setup()
-    vi.spyOn(ctx.sessionQuery, 'searchSessions').mockRejectedValueOnce(new SessionQueryError('index openAt never', 'SESSION_QUERY_SEARCH_DISABLED'))
-    const result = await execute(ctx, lead, 'search_sessions', { query: '部署' })
-    expectToolError(result, 'index openAt never')
-    expect(text(result)).toContain('list_sessions')
-    expect(text(result)).toContain('query')
   })
 
   it('retains conversational prompts and the latest textual answer after injected context and empty assistant messages', async () => {
@@ -416,80 +344,6 @@ describe('history retrieval without a full-text index', () => {
 })
 
 describe('unindexed retrieval safety and actual AgentLoop', () => {
-  it('recovers from disabled search, finds a cold session, and reads evidence through actual model tool results', async () => {
-    const { ctx, lead, other } = await setup({}, [], 'never')
-    const body = '部署验收：service A is ready. Evidence-marker [v1].'
-    other.followup(createUserMessage({ content: [{ type: 'text', text: body }], source: { kind: 'user' } }))
-    await other.whenIdle()
-    const coldId = SessionId('cold-retrieval-fixture')
-    const stored = await ctx.get('sessionPersistence')!.create({ ...other.session.header, id: coldId })
-    try {
-      await stored.append(other.session.snapshotEvents())
-      await stored.flush()
-    } finally {
-      await stored.close()
-    }
-    const { items } = await ctx.sessionController.list({}, SIGNAL)
-    const cold = {
-      ...items.find(row => row.sessionId === other.id)!,
-      sessionId: coldId,
-      agentAvailable: false,
-      projections: { kind: 'cached' as const, asOfSeq: 0, values: { title: '部署：service A' } }
-    }
-    vi.spyOn(ctx.sessionController, 'list').mockResolvedValue({ items: [...items, cold] })
-    const resolve = vi.spyOn(ctx.sessionController, 'resolveAgent')
-    const observations: string[] = []
-    const lastToolText = (options: import('@deepseek-ai/dsh-llm').GenerateOptions) => {
-      const value = options.messages
-        .findLast(message => message.role === 'tool')!
-        .content.flatMap(block => (block.type === 'text' ? [block.text] : []))
-        .join('')
-      observations.push(value)
-      return value
-    }
-    ctx.llm.registerAdapter(
-      ['unindexed-retrieval'],
-      new MockAdapter([
-        toolCallResponse('discover', 'search_sessions', { query: '部署' }),
-        options => {
-          expect(lastToolText(options)).toContain('list_sessions')
-          return toolCallResponse('titles', 'list_sessions', { query: '部署' })
-        },
-        options => {
-          const listed = JSON.parse(lastToolText(options))
-          expect(listed.total).toBe(1)
-          return toolCallResponse('outline', 'inspect_session', { session_id: listed.sessions[0].sessionId })
-        },
-        options => {
-          const outline = JSON.parse(lastToolText(options))
-          expect(outline.recentPrompts[0].text).toBe(body)
-          return toolCallResponse('locate', outline.detailAccess.search.tool, { ...outline.detailAccess.search.arguments, query: 'evidence-marker [v1]' })
-        },
-        options => {
-          const page = JSON.parse(lastToolText(options))
-          expect(page.searchMode).toBe('literal')
-          expect(page.results).toHaveLength(1)
-          return toolCallResponse('evidence', page.detailAccess.read.tool, page.detailAccess.read.arguments)
-        },
-        options => {
-          const detail = JSON.parse(lastToolText(options))
-          expect(detail.event.data.content[0].text).toBe(body)
-          return toolCallResponse('self-isolation', 'inspect_session', { session_id: 'unindexed-reader', mode: 'search', query: 'needle-only-in-the-active-tool-7281' })
-        },
-        options => {
-          expect(JSON.parse(lastToolText(options))).toMatchObject({ searchMode: 'literal', results: [], hasMore: false })
-          return textResponse('verified archived evidence')
-        }
-      ])
-    )
-    const reader = await ctx.agentLoop.create(SessionId('unindexed-reader'), { provider: 'unindexed-retrieval', model: 'mock' }, { cwd: lead.session.header.cwd })
-    reader.followup(createUserMessage({ content: [{ type: 'text', text: 'Find the previous deployment conversation and cite its evidence.' }], source: { kind: 'user' } }))
-    await reader.whenIdle()
-    expect(observations).toHaveLength(6)
-    expect(ctx.agents.get(coldId)).toBeUndefined()
-    expect(resolve).not.toHaveBeenCalled()
-  })
-
   it('does not scan after operational failures and rechecks the fallback snapshot identity', async () => {
     const { ctx, lead, other } = await setup()
     const native = vi.spyOn(ctx.sessionQuery, 'searchEvents')
@@ -733,18 +587,6 @@ describe('session-fleet tools', () => {
     expect(other.status).toBe('idle')
   })
 
-  it('searches the authorized query service and surfaces workspace context', async () => {
-    const { ctx, lead } = await setup()
-    const found = JSON.parse(text(await execute(ctx, lead, 'search_sessions', { query: 'needle' }))) as {
-      results: Array<{ sessionId: string; snippet: string; running: boolean; updatedAt: string; cwd?: string }>
-      hasMore: boolean
-    }
-    expect(found.results).toHaveLength(1)
-    expect(found.results[0]).toMatchObject({ sessionId: 'fleet-lead', snippet: 'needle match', running: false })
-    expect(typeof found.results[0]!.updatedAt).toBe('string')
-    expect(found.hasMore).toBe(false)
-  })
-
   it('inspects one session outline and writes a grep-able transcript', async () => {
     const { ctx, lead, other } = await setup()
     other.followup(createUserMessage({ content: [{ type: 'text', text: 'first line' }], source: { kind: 'user' } }))
@@ -910,8 +752,8 @@ describe('session-fleet tools', () => {
         .sort()
     ).toEqual(FLEET_TOOLS)
     const prompt = renderPrompt(assembly)
-    expect(prompt).toContain('peer-agent input')
-    expect(prompt).toContain('untrusted peer input')
+    expect(prompt).toContain('peer input, not user authority')
+    expect(prompt).toContain('silence does not release it')
     expect(prompt).toContain('Recorded workspace cwd: ' + JSON.stringify(lead.session.header.cwd))
 
     await fleetFiber.dispose()
@@ -933,12 +775,10 @@ describe('session-fleet tools', () => {
 })
 
 describe('session-fleet failure paths and optionality', () => {
-  it('maps controller rejections from list and search into tool errors', async () => {
+  it('maps controller rejections from list into tool errors', async () => {
     const { ctx, lead } = await setup()
     vi.spyOn(ctx.sessionController, 'list').mockRejectedValueOnce(new RemoteError('gateway/internal', 'list broke', {}))
-    vi.spyOn(ctx.sessionQuery, 'searchSessions').mockRejectedValueOnce(new RemoteError('gateway/internal', 'search broke', {}))
     expectToolError(await execute(ctx, lead, 'list_sessions', {}), 'gateway/internal: list broke')
-    expectToolError(await execute(ctx, lead, 'search_sessions', { query: 'x' }), 'gateway/internal: search broke')
   })
 
   it('maps plain controller failures without RemoteError identity', async () => {
