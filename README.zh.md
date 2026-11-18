@@ -35,7 +35,6 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 ## 每个智能体安装的工具
 
 - `list_sessions`：列出可见会话及状态、活跃时间与工作目录，不会激活任何目标。可选 `query` 按标题做不区分大小写的字面子串匹配，接受 1–500 个 UTF-16 代码单元，不依赖全文索引。默认数量取 20 与 `maxListRows` 的较小值；`hiddenSubagentSessions` 只统计所有权隐藏，与 cwd 过滤无关。
-- `search_sessions`：先限定 Host 允许访问的会话，再搜索有索引的当前用户与助手消息。全文搜索被停用时，错误提供 `list_sessions` 标题查询示例。内容搜索要求 profile 中的 `session-query-sqlite` 行不是 `openAt: never`：索引在该历史首次搜索时建立，语料很大时可能耗时数分钟，因此本工具单次调用放宽到 180 秒。建议把 `path` 指向持久文件，后续启动直接复用已建索引，不必重扫每个会话日志。支持 `cwd`、ISO 8601 时间 `after`/`before`、`limit` 和 `cursor`；命中包含有界片段、事件 `seq`、目录、状态、活跃时间及已有标题提示。
 - `inspect_session` 默认 `mode: "outline"`，返回截断概览、宿主可提供的原始 `source.location` 和可执行的 `detailAccess` 示例。用 `mode: "search"` 与 `query` 查询会话内事件，再用 `mode: "read"` 与 `seq` 读取顶层正文、完整原始事件及有界相邻摘要。用 `mode: "calls"` 在不加载正文的情况下定位工具输入、结果和失败项。原有私有文本投影仅在概览模式显式传 `transcript: true` 时导出。
 - `manage_session_inbox`：不激活目标即可查看待处理的对等输入，也可按原生 ID 与期望版本原位更新或撤回一条待处理消息。普通用户输入与已消费历史受到保护，详见待处理消息管理。
 - `create_session`：创建独立的普通对话，接受显式 `cwd` 或 `workspace_id`，两者互斥。新会话会挂载到 workspace 以便出现在会话列表：显式 `cwd` 只挂载到该路径已存在的 workspace（路径不同时绝不误挂到调用者的），两者都省略时继承调用者 workspace，找不到时使用调用者记录的工作目录。
@@ -104,27 +103,6 @@ await tools.send_to_session({
 `source.status` 为 `located`、`unavailable` 或 `error`。定位成功时原样转交后端的 `{ kind, path }`，不根据会话 ID 拼接路径。`revision` 是可选的不透明存储标记。较旧宿主或某些后端可能不提供位置。定位异常会在 `source.reason` 中明确报告，概览仍可使用。路径可能指向目录或文件，也不保证包含最新内存尾部；请使用按会话 ID 的详情调用，让宿主负责解码与实时读取。读取不会激活 Agent 或强制 flush。
 
 读取模式保留完整目标事件，不按字节截断。可在程序化工具调用中只选取需要的字段，或配置 DSH 通用 spill 策略限制较大结果的内联显示。有界概览、搜索片段、相邻摘要和可选 TSV 导出各有用途。`transcript: true` 仍返回 `transcriptPath`、`transcriptLines`、`transcriptBytes`、`transcriptTruncated` 与 `transcriptExpiresAt`。
-
-## 全文索引停用时的检索
-
-先按标题关键词定位候选，例如 `list_sessions({ query: "部署" })`。`total` 统计匹配的可见会话。标题匹配使用宿主已有的投影提示，沿用分页与子会话规则。
-
-选定会话后，即使宿主返回 `SESSION_QUERY_SEARCH_DISABLED`，仍可用 `inspect_session({ session_id, mode: "search", query })` 定位证据。它对这一个原生快照复用宿主 SDK 的语义文档和字面过滤函数。结果带 `searchMode: "literal"`，不区分大小写、允许空白差异，并按事件顺序返回。片段保留匹配位置附近的文本，再按 `seq` 读取完整原文。其他后端故障仍作为错误返回。
-
-这条路径不新增索引，也不扫描其他会话的消息正文。标题没有匹配不代表会话正文没有提到该主题，可换用其他标题关键词，或在全文索引可用时搜索消息。
-
-## 启用内容搜索
-
-`search_sessions` 调用宿主 `sessionQuery` 服务。默认安装以 `openAt: never` 挂载它，因此精确读取与标题可用，内容搜索报错。为当前 profile 启用，只需在该 profile 的 `cordis.patch.yml` 增加一条：
-
-```yaml
-- id: session-query-sqlite
-  config:
-    path: /绝对路径/session-query.sqlite # 持久文件，后续启动直接复用
-    openAt: startup # 也可用 first-search
-```
-
-语料变化后的首次搜索会重建索引，历史很大时可能耗时数分钟；之后的搜索读取已建索引。`openAt: startup` 在启动时付这笔成本，`first-search` 推迟到首次搜索。`dsh-experimental-session-search` bundle 挂载的是自己隔离的索引，只有它自带的工具能用，因此仅启用该 bundle 不会让本工具可搜。
 
 ## 兼容范围
 

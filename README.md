@@ -35,7 +35,6 @@ Inspection defaults to an outline with native detail calls. Request `transcript:
 ## Tools installed per agent
 
 - `list_sessions` lists visible sessions with status, activity, and working directory, and starts none of them. Its optional `query` matches a literal, case-insensitive title substring of 1–500 UTF-16 units, independently of the full-text index. Its default page size is the smaller of 20 and `maxListRows`; `hiddenSubagentSessions` counts only ownership exclusions, independently of a cwd filter.
-- `search_sessions` searches indexed current user and assistant messages after restricting results to Host-authorized sessions. When full-text search is disabled, the error provides a `list_sessions` title-query example. Content search needs a profile whose `session-query-sqlite` row is not `openAt: never`: the index is built on the first search over that history, which can take minutes on a large corpus, so this tool allows 180 seconds for one call. Point `path` at a durable file so later launches reuse the built index instead of rescanning every session log. It accepts `cwd`, ISO 8601 `after`/`before`, `limit`, and `cursor`. Hits include a bounded snippet, matching `seq`, working directory, state, activity, and an existing title hint when available.
 - `inspect_session` defaults to `mode: "outline"`: a clipped outline, an optional native `source.location`, and executable `detailAccess` examples. Use `mode: "search"` with `query` to find events in that session, then `mode: "read"` with `seq` to read top-level text, the complete original event and bounded neighboring summaries. Use `mode: "calls"` to navigate tool inputs, results, and failures without loading their bodies. Set `transcript: true` only in outline mode for the existing private text projection.
 - `manage_session_inbox` lists pending peer input without starting the target, or replaces/withdraws one pending occurrence with its native id and expected revision. It protects human input and consumed history. See pending-message management below.
 - `create_session` creates an independent ordinary conversation and accepts either an explicit `cwd` or an explicit `workspace_id`. The created session is attached to a workspace so it appears in the session list: an explicit `cwd` attaches to an existing workspace for that path (never the caller’s when the path differs), and with neither parameter it inherits the caller’s workspace, falling back to the caller’s recorded working directory.
@@ -106,27 +105,6 @@ All modes check current Host visibility and subagent policy before native access
 `source.status` is `located`, `unavailable`, or `error`. A located source forwards the backend’s `{ kind, path }` without constructing a path from the session ID. `revision` is an optional opaque storage token. Older Hosts or backends may not publish a location. A locator failure is explicit in `source.reason` while the outline remains useful. The path may identify a directory or a file and need not contain the latest in-memory tail. Use the session-ID detail calls for native decoding and live reads. No read activates an Agent or forces a storage flush.
 
 Read mode preserves the full target event and imposes no byte truncation. Use programmatic tool calls to select needed fields, or configure DSH’s generic spill policy for large rendered results. The bounded outline, search snippets, context summaries, and optional TSV export have separate purposes. `transcript: true` returns `transcriptPath`, `transcriptLines`, `transcriptBytes`, `transcriptTruncated`, and `transcriptExpiresAt`.
-
-## Retrieval without a full-text index
-
-Find candidates with a title keyword, for example `list_sessions({ query: "部署" })`. `total` counts matching visible sessions. Title matching uses existing Host projection hints and keeps the ordinary pagination and subagent rules.
-
-Once you select a session, `inspect_session({ session_id, mode: "search", query })` can still locate evidence when the Host reports `SESSION_QUERY_SEARCH_DISABLED`. It reuses the Host SDK’s semantic documents and literal filters for that one native snapshot. Results carry `searchMode: "literal"`, use case-insensitive, whitespace-flexible matching, and follow event order. Snippets stay near the match. Read the selected `seq` for complete evidence. Other backend failures remain errors.
-
-This path creates no additional index and does not scan other sessions’ message bodies. A missing title match does not establish that no conversation contains the topic. Try another title keyword or use indexed message search when available.
-
-## Enabling content search
-
-`search_sessions` calls the Host `sessionQuery` service. A default installation mounts it with `openAt: never`, so exact reads and titles work while content search fails. To enable it for this profile, add one entry to the profile's `cordis.patch.yml`:
-
-```yaml
-- id: session-query-sqlite
-  config:
-    path: /absolute/path/to/session-query.sqlite # durable; reuse across launches
-    openAt: startup # or first-search
-```
-
-The first search after a corpus change rebuilds the index and can take minutes on a large history; later searches read the built index. `openAt: startup` pays that cost at launch, `first-search` at the first search. A `dsh-experimental-session-search` bundle mounts its own isolated index that only its bundled tools can reach, so enabling that bundle alone does not enable this tool.
 
 ## Compatibility
 

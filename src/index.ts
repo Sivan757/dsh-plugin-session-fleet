@@ -1,11 +1,9 @@
 /** Scoped model-facing tools for discovering, reading, creating, and messaging DSH sessions. */
 
 import type { Context } from '@deepseek-ai/cordis'
-import { literalQuery, SearchContinuations } from './discovery.ts'
-import { SessionQueryError } from '@deepseek-ai/dsh-session-query'
+import { literalQuery } from './discovery.ts'
 import { TranscriptStore } from './transcript.ts'
 import { INSPECT_OUTPUT_SCHEMA, inspectParameters, inspectSession } from './inspection.ts'
-import type { SessionEventMetadataFilter } from '@deepseek-ai/dsh-session-query'
 import z from '@deepseek-ai/schemastery'
 /**
  * Apply a domain brand to a value the domain already admitted.
@@ -56,12 +54,6 @@ export interface Config {
   readonly transcriptTtlSeconds?: number
   /** Maximum UTF-16 text units per transcript chunk before escaping. */
   readonly transcriptChunkChars?: number
-  /** Maximum retained search continuation handles. */
-  readonly searchCursorMaxEntries?: number
-  /** Continuation lifetime in seconds; capacity or unload may reclaim it sooner. */
-  readonly searchCursorTtlSeconds?: number
-  /** Maximum emitted sessions remembered by one search traversal. */
-  readonly searchCursorMaxSessions?: number
 }
 
 /** Loader schema for the Session Fleet tool plugin. */
@@ -77,10 +69,7 @@ export const Config: z<Config> = z.object({
     .default(8 * 1024 * 1024),
   transcriptMaxFiles: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(20),
   transcriptTtlSeconds: z.natural().min(1).max(2_147_483).default(3600),
-  transcriptChunkChars: z.natural().min(64).max(65_536).default(1024),
-  searchCursorMaxEntries: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(100),
-  searchCursorTtlSeconds: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(300),
-  searchCursorMaxSessions: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(10000)
+  transcriptChunkChars: z.natural().min(64).max(65_536).default(1024)
 })
 
 /** Model-facing collaboration guidance for fleet tools. */
@@ -110,32 +99,6 @@ const LIST_VALUE_SCHEMA = {
     hasMore: { type: 'boolean', required: true },
     nextOffset: { type: 'integer' },
     hiddenSubagentSessions: { type: 'integer' }
-  }
-} as const
-
-const SEARCH_VALUE_SCHEMA = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    results: {
-      type: 'array',
-      required: true,
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          sessionId: { type: 'string', required: true },
-          snippet: { type: 'string', required: true },
-          seq: { type: 'integer', required: true },
-          title: { type: 'string' },
-          cwd: { type: 'string' },
-          running: { type: 'boolean' },
-          updatedAt: { type: 'string' }
-        }
-      }
-    },
-    hasMore: { type: 'boolean', required: true },
-    nextCursor: { type: 'string' }
   }
 } as const
 
@@ -232,7 +195,7 @@ function positiveInt(value: number | undefined, max: number): boolean {
 }
 
 /** Register the complete Session Fleet tool set in one exact Agent scope. */
-function install(agent: Agent, ctx: Context, config: Required<Config>, transcripts: TranscriptStore, continuations: SearchContinuations): () => void {
+function install(agent: Agent, ctx: Context, config: Required<Config>, transcripts: TranscriptStore): () => void {
   const scoped = agent.ctx
   const disposers: Array<() => unknown> = []
   const register = (disposer: () => unknown): void => {
@@ -323,127 +286,6 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
                 ...(items.length === visible.length ? {} : { hiddenSubagentSessions: items.length - visible.length })
               }
             } catch (error: unknown) {
-              throw new Error(errorText(error))
-            }
-          }
-        })
-      )
-    )
-
-    register(
-      scoped.tools.register(
-        defineTool({
-          name: 'search_sessions',
-          description:
-            'Search indexed message contents in Host-visible sessions, with bounded excerpts and matching event seqs. Reuse nextCursor with identical query and filters to continue. Inspect a candidate before messaging it.',
-          parameters: {
-            query: {
-              type: 'string',
-              required: true,
-              description: 'Literal word or phrase query, up to 500 UTF-16 code units. Short CJK substring matches depend on the provider.'
-            },
-            limit: {
-              type: 'integer',
-              description: `Maximum hits, 1 through ${config.maxListRows}. Defaults to ${Math.min(20, config.maxListRows)}; the search provider may impose a smaller maximum.`
-            },
-            cwd: { type: 'string', description: 'Only sessions whose recorded cwd starts with this path.' },
-            after: { type: 'string', description: 'Only matching messages at or after this ISO 8601 timestamp.' },
-            before: { type: 'string', description: 'Only matching messages at or before this ISO 8601 timestamp.' },
-            cursor: {
-              type: 'string',
-              description:
-                'Opaque nextCursor from the identical query, cwd, time filters, and limit. Continues live results without repeating sessions; new matches may appear. Restart without it after expiry.'
-            }
-          },
-          // The provider may build or reconcile its index inside this call; a
-          // 30s budget aborts that work on a large history and never converges.
-          timeoutMs: 180_000,
-          output: jsonOutput(SEARCH_VALUE_SCHEMA),
-          async execute(args, exec) {
-            const caller = callingAgent(exec.agent, 'search_sessions')
-            try {
-              if (!positiveInt(args.limit, config.maxListRows)) throw new Error(`limit must be an integer from 1 through ${config.maxListRows}`)
-              const query = literalQuery(args.query)
-              const time = (value: string | undefined) => {
-                if (value === undefined) return undefined
-                const parsed = Date.parse(value)
-                if (!/^[0-9]{4}-[0-9]{2}-[0-9]{2}T/.test(value) || !Number.isFinite(parsed)) throw new Error('after and before must be ISO 8601 timestamps')
-                return parsed
-              }
-              const from = time(args.after)
-              const to = time(args.before)
-              if (from !== undefined && to !== undefined && from > to) throw new Error('after must not be later than before')
-              const limit = args.limit ?? Math.min(20, config.maxListRows)
-              const state = continuations.begin(caller.id, { query, cwd: args.cwd, from, to, limit, includeSubagents: config.includeSubagents }, args.cursor)
-              const summaries = await ctx.sessionController.list({}, exec.signal)
-              const rows = new Map(
-                summaries.items
-                  .filter(row => (config.includeSubagents || row.origin !== 'subagent') && (args.cwd === undefined || row.cwd?.startsWith(args.cwd)))
-                  .map(row => [row.sessionId, row])
-              )
-              const seen = new Set(state.seen)
-              const eligible = [...rows.keys()].filter(id => !seen.has(id)).sort()
-              if (eligible.length === 0) return { results: [], hasMore: false }
-              const remaining = continuations.remaining(state)
-              if (remaining === 0) throw new Error('Search continuation limit reached; narrow cwd or the time window.')
-              const eventFilters: SessionEventMetadataFilter[] = [
-                { kind: 'type', values: ['user/message', 'assistant/message'] },
-                { kind: 'surface', values: ['current'] }
-              ]
-              if (from !== undefined || to !== undefined) eventFilters.push({ kind: 'time', ...(from === undefined ? {} : { from }), ...(to === undefined ? {} : { to }) })
-              const page = await ctx.sessionQuery.searchSessions(
-                {
-                  query,
-                  sessionFilters: [{ kind: 'id', values: eligible }],
-                  eventFilters,
-                  limit: Math.min(limit, remaining)
-                },
-                { signal: exec.signal }
-              )
-              const results = page.items.flatMap(hit => {
-                const row = rows.get(hit.header.id)
-                if (
-                  row === undefined ||
-                  seen.has(row.sessionId) ||
-                  hit.bestMatch.sessionId !== row.sessionId ||
-                  hit.bestMatch.surface !== 'current' ||
-                  (hit.bestMatch.type !== 'user/message' && hit.bestMatch.type !== 'assistant/message')
-                )
-                  return []
-                return [
-                  {
-                    sessionId: row.sessionId,
-                    snippet: Array.from(hit.bestMatch.snippet).slice(0, 240).join(''),
-                    seq: hit.bestMatch.seq,
-                    running: row.running,
-                    updatedAt: new Date(row.updatedAt).toISOString(),
-                    ...(row.cwd === undefined ? {} : { cwd: row.cwd }),
-                    ...(typeof row.projections?.values.title === 'string' ? { title: row.projections.values.title } : {})
-                  }
-                ]
-              })
-              if (page.nextCursor !== undefined && results.length === 0)
-                throw new Error('Search provider returned no eligible results for continuation; restart with narrower filters.')
-              return {
-                results,
-                hasMore: page.nextCursor !== undefined,
-                ...(page.nextCursor === undefined
-                  ? {}
-                  : {
-                      nextCursor: continuations.next(
-                        state,
-                        results.map(row => row.sessionId)
-                      )
-                    })
-              }
-            } catch (error: unknown) {
-              if (error instanceof SessionQueryError && error.code === 'SESSION_QUERY_SEARCH_DISABLED')
-                throw new Error(
-                  errorText(error) +
-                    '. Use list_sessions({query: ' +
-                    JSON.stringify(args.query) +
-                    '}) for title matches, then inspect_session to read a candidate. Choose a different title keyword if needed.'
-                )
               throw new Error(errorText(error))
             }
           }
@@ -618,16 +460,10 @@ export async function apply(ctx: Context, options: Config): Promise<void> {
     error => ctx.logger.warn('Session Fleet transcript cleanup failed: %s', String(error))
   )
   ctx.effect(() => () => transcripts.dispose(), 'tool-session-fleet.transcripts()')
-  const continuations = new SearchContinuations({
-    maxEntries: config.searchCursorMaxEntries,
-    ttlSeconds: config.searchCursorTtlSeconds,
-    maxSessions: config.searchCursorMaxSessions
-  })
-  ctx.effect(() => () => continuations.dispose(), 'tool-session-fleet.searchContinuations()')
   const installed = new Map<Agent, () => void>()
   const maybeInstall = (agent: Agent): void => {
     if (installed.has(agent)) return
-    installed.set(agent, install(agent, ctx, config, transcripts, continuations))
+    installed.set(agent, install(agent, ctx, config, transcripts))
   }
   for (const agent of ctx.agents.list()) maybeInstall(agent)
   ctx.on('agent/created', ({ agent }) => {
