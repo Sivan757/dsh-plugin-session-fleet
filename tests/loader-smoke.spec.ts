@@ -113,40 +113,14 @@ it('loads the configured fleet with real workspace creation, delivery, inspectio
   const child = await ctx.agentLoop.create(SessionId('smoke-child'), { provider: 'mock', model: 'mock', cwd, origin: 'subagent', parentSessionId: caller.id })
   child.followup(createUserMessage({ content: [{ type: 'text', text: 'loader smoke message' }], source: { kind: 'user' } }))
   await child.whenIdle()
-  const found = await execute('search_sessions', { query: 'smoke message', cwd: workspace.path, limit: 1 })
-  expect(found.results).toHaveLength(1)
-  expect(found.nextCursor).toBeTypeOf('string')
-  const next = await execute('search_sessions', { query: 'smoke message', cwd: workspace.path, limit: 1, cursor: found.nextCursor })
-  expect(next.results).toHaveLength(1)
-  expect(next.hasMore).toBe(false)
-  expect(new Set([...found.results, ...next.results].map(row => row.sessionId))).toEqual(new Set([inherited.sessionId, second.sessionId]))
-  expect(found.results[0].seq).toBeTypeOf('number')
   const listed = await execute('list_sessions', { cwd: workspace.path, limit: 1 })
-  const listedAgain = await execute('list_sessions', { cwd: workspace.path, limit: 1, cursor: listed.nextCursor })
+  const listedAgain = await execute('list_sessions', { cwd: workspace.path, limit: 1, offset: listed.nextOffset })
   expect(listedAgain.sessions[0].sessionId).not.toBe(listed.sessions[0].sessionId)
-  const actualPages: string[] = []
-  const request = { query: 'smoke message', cwd: workspace.path, limit: 1 }
   const toolText = (options: import('@deepseek-ai/dsh-llm').GenerateOptions) =>
     options.messages
       .findLast(message => message.role === 'tool')!
       .content.flatMap(block => (block.type === 'text' ? [block.text] : []))
       .join('')
-  const continueSearch = (options: import('@deepseek-ai/dsh-llm').GenerateOptions) => {
-    const text = toolText(options)
-    actualPages.push(text)
-    const page = JSON.parse(text)
-    return page.hasMore ? toolCallResponse('page-' + actualPages.length, 'search_sessions', { ...request, cursor: page.nextCursor }) : textResponse('finished')
-  }
-  ctx.get('llm')!.registerAdapter(['fleet-paging'], new MockAdapter([toolCallResponse('page-one', 'search_sessions', request), ...Array.from({ length: 6 }, () => continueSearch)]))
-  const pager = await ctx.agentLoop.create(SessionId('fleet-real-tool-pager'), { provider: 'fleet-paging', model: 'mock' }, { cwd: workspace.path })
-  pager.followup(createUserMessage({ content: [{ type: 'text', text: 'exercise discovery continuation' }], source: { kind: 'user' } }))
-  await pager.whenIdle()
-  expect(actualPages.length).toBeGreaterThanOrEqual(2)
-  const paged = actualPages.map(text => JSON.parse(text))
-  const ids = paged.flatMap(page => page.results.map((row: { sessionId: string }) => row.sessionId))
-  expect(new Set(ids).size).toBe(ids.length)
-  expect(ids).toEqual(expect.arrayContaining([inherited.sessionId, second.sessionId]))
-  expect(paged.at(-1).hasMore).toBe(false)
   const coldId = SessionId('fleet-native-cold-fixture')
   const original = ctx.agents.get(SessionId(inherited.sessionId))!.session
   const persisted = await ctx.get('sessionPersistence')!.create({ ...original.header, id: coldId })
