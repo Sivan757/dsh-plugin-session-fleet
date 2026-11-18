@@ -14,6 +14,8 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 ## 0.5.0 之后的未发布变更
 
+移除 `search_sessions`：默认部署把宿主 session-query 服务挂成 `openAt: never`，该工具必然失败；而启用索引的部署本就有宿主 `session_search`，`list_sessions` 的标题查询可在无索引时覆盖发现需求。注入的协作策略从约 4,200 字符压到约 900 字符，语义不变。
+
 协作触发条件现在置于注入策略最前：当已知或怀疑另一会话存在未完成工作时，共享操作（改动对方文件、使用共享 Git 暂存区、全仓格式化或校验、重挂共享运行时、独占资源）必须完成 发现 → 检查 → 提案 → 获得同意，且不得与该检查并行执行。`send_to_session.message` 的结构化对象分支排在纯字符串之前，描述要求传入带 `kind` 的对象而非 JSON 文本。`accept` 和 `release` 分支的工具 schema 不再暴露 `next` 属性；运行时行为不变（`block`、`update`、`complete` 仍可用 `next`）。`evals/` 目录新增真实模型行为评测套件（见开发一节）。
 
 ## 从 0.4.0 升级
