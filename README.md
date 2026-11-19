@@ -14,7 +14,7 @@ The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conserv
 
 ## Unreleased changes since 0.5.0
 
-`search_sessions` is removed: every default deployment mounts the Host session-query service with `openAt: never`, so the tool always failed, and installations that do enable an index already have the Host `session_search` tool. `list_sessions` with a title query covers discovery without an index. The injected coordination policy shrank from about 4,200 to 900 characters without changing the guidance it states.
+`search_sessions` is removed: every default deployment mounts the Host session-query service with `openAt: never`, so the tool always failed, and installations that do enable an index already have the Host `session_search` tool. `list_sessions` with a title query covers discovery without an index. The injected coordination policy shrank from about 4,200 to 320 characters without changing the guidance it states.
 
 The coordination trigger now leads the injected policy: when another session’s unfinished work is known or suspected, shared operations (touching its files, using the shared Git index, whole-repository formatting or validation, remounting a shared runtime, exclusive resources) require discover → inspect → propose → agreement, and none of them runs in parallel with that check. `send_to_session.message` now presents the structured objects before the plain-string branch, and its description asks for an object with `kind` instead of JSON-encoded text. The `accept` and `release` branches no longer expose a `next` property in the tool schema; runtime behavior is unchanged (`next` remains available on `block`, `update`, and `complete`). A model-behavior evaluation suite lives in `evals/` (see Development).
 

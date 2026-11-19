@@ -4,7 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, InboxState } from '@deepseek-ai/dsh-agent'
 import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
-import { peerMessageSummary, isFleetFrame, revisePeerMessage, reframePeerMessage } from './coordination.ts'
+import { isCurrentFleetFrame, peerMessageSummary, isFleetFrame, revisePeerMessage, reframePeerMessage } from './coordination.ts'
 import type { Config } from './index.ts'
 
 export const inboxParameters = {
@@ -110,7 +110,7 @@ export function refreshPendingPreviews(agent: Agent): number {
   let changed = 0
   for (const message of [...agent.inbox.nextStep, ...agent.inbox.nextTurn]) {
     const first = message.content[0]
-    if (message.source.kind !== 'session-fleet' || !isFleetFrame(first) || first?.type !== 'text' || !first.text.startsWith('<system-reminder>')) continue
+    if (message.source.kind !== 'session-fleet' || !isFleetFrame(first) || isCurrentFleetFrame(first)) continue
     const current = [...agent.inbox.nextStep, ...agent.inbox.nextTurn].find(item => item.id === message.id)
     if (current !== message) continue
     if (agent.inbox.replace(message.id, reframePeerMessage(message))) changed++
