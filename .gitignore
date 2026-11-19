@@ -5,3 +5,4 @@ coverage/
 *.tsbuildinfo
 /evals/results/
 /evals/.build/
+/artwork/
