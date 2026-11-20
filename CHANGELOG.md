@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.8.0...dsh-plugin-session-fleet-v0.9.0) (2026-11-20)
+
+
+### Features
+
+* draw the fleet icon from the WeChat and DeepSeek marks ([#19](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/19)) ([5730a2e](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/5730a2e7ec903ea86f5827ec4dbd01e594c4aee8))
+* own the session search index instead of borrowing the host one ([78b6aca](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/78b6aca23dba9eb2258f5f720921c65235bbe584))
+* redraw the fleet icon as two DeepSeek whales in conversation ([#18](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/18)) ([28557af](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/28557aff62edda17e6c86dd4df68d3c3b1e87510))
+* replace the fleet plugin icon with a coordination-hub glyph ([#16](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/16)) ([5529b06](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/5529b0663e540661ff9309e139eb409e4a0a2639))
+* search the durable session index from a Fleet tool ([e7cda39](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/e7cda399e7a5f2f25517cd565c3fb829f18eb9bd))
+* use the blue-cyan chat search mark as the fleet icon ([#20](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/20)) ([679cb32](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/679cb324771ee98053e26a297d19fd1f424de3f3))
+
 ## [0.8.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.7.0...dsh-plugin-session-fleet-v0.8.0) (2026-11-18)
 
 
