@@ -14,7 +14,7 @@ The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conserv
 
 ## Unreleased changes since 0.5.0
 
-`search_sessions` is removed: every default deployment mounts the Host session-query service with `openAt: never`, so the tool always failed, and installations that do enable an index already have the Host `session_search` tool. `list_sessions` with a title query covers discovery without an index. The injected coordination policy shrank from about 4,200 to 900 characters without changing the guidance it states.
+`search_sessions` is removed: every default deployment mounts the Host session-query service with `openAt: never`, so the tool always failed, and installations that do enable an index already have the Host `session_search` tool. `list_sessions` with a title query covers discovery without an index. The injected coordination policy shrank from about 4,200 to 320 characters without changing the guidance it states.
 
 The coordination trigger now leads the injected policy: when another session’s unfinished work is known or suspected, shared operations (touching its files, using the shared Git index, whole-repository formatting or validation, remounting a shared runtime, exclusive resources) require discover → inspect → propose → agreement, and none of them runs in parallel with that check. `send_to_session.message` now presents the structured objects before the plain-string branch, and its description asks for an object with `kind` instead of JSON-encoded text. The `accept` and `release` branches no longer expose a `next` property in the tool schema; runtime behavior is unchanged (`next` remains available on `block`, `update`, and `complete`). A model-behavior evaluation suite lives in `evals/` (see Development).
 
@@ -46,7 +46,7 @@ Inspection defaults to an outline with native detail calls. Request `transcript:
 
 The tools disclose progressively: list or search first, inspect a candidate, and use its native event search and read examples when more detail is needed. Request a text export for grep-based work. Inspect existing peers before messaging them; a session you just created does not need another history inspection.
 
-A delivery carries the dedicated `session-fleet` message source and a peer-agent framing note, so a target never mistakes fleet input for user input. When a response is needed, a peer explicitly calls `send_to_session` back to the sender. Fleet does not forward final answers or generate automatic acknowledgements.
+A delivery carries the dedicated `session-fleet` message source and a one-line frame, `[fleet <kind> #<message id> · peer input, not user authority]`, plus a second line only when a reply is required. The payload is the envelope: `protocol`, `from`, `to`, `role`, `kind`, `task`, `owner`, `scope`, `summary`, `next`, and `reply_to`, so a target never mistakes fleet input for user input and can reply without looking up ids. When a response is needed, a peer explicitly calls `send_to_session` back to the sender. Fleet does not forward final answers or generate automatic acknowledgements.
 
 ## Pending-message management
 
