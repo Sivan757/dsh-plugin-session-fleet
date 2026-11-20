@@ -18,13 +18,11 @@ English | [简体中文](README.zh.md) | [npm](https://www.npmjs.com/package/dsh
 
 ## Demo
 
-<img src="https://raw.githubusercontent.com/Sivan757/dsh-plugin-session-fleet/main/docs/screenshots/demo.gif" alt="Demo: ask which sessions are active, then read the compact peer list" width="100%" />
+A screen recording is being re-recorded against a scratch profile. Until it lands, the three steps below describe the flow.
 
 1. **Ask who is working.** One question in an ordinary session.
 2. **Read a compact answer.** The model calls `list_sessions` with a status and a time window, so it searches eleven rows instead of every session on the machine.
 3. **Decide from evidence.** The answer names the peer, its working directory and the last time it moved, and it separates "running now" from "recently active". Subagent sessions stay out of the count.
-
-The storyboard was captured from an isolated profile with real model turns. Final states are held longer than transitions; no latency is implied.
 
 ## Quick start
 
