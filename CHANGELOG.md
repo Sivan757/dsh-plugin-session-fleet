@@ -1,5 +1,68 @@
 # Changelog
 
+## [0.5.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.9.0...dsh-plugin-session-fleet-v0.5.0) (2026-11-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* search_sessions is no longer registered.
+* export bounded session transcripts only on request
+
+### Features
+
+* auto-assign new sessions to caller workspace (fixes ungrouped issue) ([1124331](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/11243315b995848f3569da3bc7ad1c8e08ea62bf))
+* bound read_session token cost with per-message truncation and after_seq incremental reads ([5f1c9e0](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/5f1c9e0598af1418b7812d65aea700eb61adb54e))
+* coordinate scoped work with structured peer messages ([c0c53bb](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/c0c53bbc65c6b0f656677b3930788f2eeaba391d))
+* draw the fleet icon from the WeChat and DeepSeek marks ([#19](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/19)) ([1e24ad8](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/1e24ad8b3d870f857885ae8ef6a6b66d9db83e1f))
+* export bounded session transcripts only on request ([4fbf4ec](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/4fbf4ec369e1ebf15bfed6182024f50ba0913897))
+* expose native session details through inspect modes ([4f72d51](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/4f72d512b50b18e9830cf36171631befa368dd2d))
+* filter and compact view for list_sessions ([747a9e7](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/747a9e79d3abf9092b7bf8caff9c49bddd457672))
+* hide subagent-owned sessions behind an includeSubagents opt-in ([13705e6](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/13705e63872e0846c2eaca37ef659b2a0c53f88b))
+* improve session retrieval and coordinated work ([036a963](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/036a963549c97171a4eb79288901a27968a0ae00))
+* inspect_session outline and workspace-aware search hits ([cf33bd6](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/cf33bd6811cdc183f4389991d36c76a36ff27e40))
+* inspect_session writes a grep-able transcript instead of paging messages ([b19a0d2](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/b19a0d25d43057069db6a1e60a95e5b33c322981))
+* manage pending peer inbox messages ([ce7751b](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/ce7751b73846f4ebdb2b91939c2ebdc359b8917c))
+* navigate native tool calls and failures ([43655d4](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/43655d4a9e101b4a987d2c17c3be6f0be58e5414))
+* on-disk full-text session search with CJK bigrams, incremental refresh ([975edb8](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/975edb8b40de1b26e1189b511ae16aa91eab4219))
+* own the session search index instead of borrowing the host one ([d36f956](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/d36f956a445fce60358b441d6decba8e674ee6a0))
+* paginate authorized session discovery and search ([c1d58bc](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/c1d58bcd27d5b921bf2b5a85e8f8c4b4b3cc32ab))
+* redraw the fleet icon as two DeepSeek whales in conversation ([#18](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/18)) ([2e8d131](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/2e8d1310ecba599e6e65a7c9f2f49ed32d0ca484))
+* replace the fleet plugin icon with a coordination-hub glyph ([#16](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/16)) ([3da8b3b](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/3da8b3b5fe3af8d55923e0202596c1bd09e783be))
+* require peer agreement before shared operations ([#10](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/10)) ([1e00c74](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/1e00c748db28341122775ef431cb92b40846fa00))
+* retrieve session evidence without a full-text index ([2432b2f](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/2432b2f2b469c5e6b07546d5d8f63feb142338c2))
+* return inspectable delivery persistence receipts ([52c4300](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/52c4300dbd4c9eccf4281f7c9309a46ede6fdccf))
+* search the durable session index from a Fleet tool ([c2d663f](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/c2d663fa885eb50e91f933737ba9687708303b1f))
+* use the blue-cyan chat search mark as the fleet icon ([#20](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/20)) ([0598f48](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/0598f48380cccef7b9b7116312489fd331eea0d9))
+
+
+### Bug Fixes
+
+* assert the build order without needing a build ([7772728](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/7772728ac35b065fcfccc941baeb391583f63886))
+* decide the native build scripts so CI can install ([e7dbf30](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/e7dbf3002f60c6230371f581ead4906fbfff2b78))
+* deliver coordination feedback within active turns ([6ba8ca3](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/6ba8ca332d5f87afe4d5ea8a5c7ce2b8deb10aff))
+* distinguish recorded workspace from command cwd ([cb5d286](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/cb5d28666aaadb56d0b43655f236378a6de1e128))
+* honor explicit session locations and list bounds ([28e52ac](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/28e52ac282b2a02e292b8243bb1b7f4907c40d43))
+* keep the published declarations and skip a duplicate publish ([fbe9495](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/fbe949580de3bdb2d5b02e8c2d3b4bee1f617b35))
+* preserve discovery continuation across model tool calls ([1a8fe37](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/1a8fe37579ae0f0286ae23c92b97dd56233f9ac6))
+* restore bundle stub module ([2ab5b5e](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/2ab5b5eb043df055b85b308a9b8cd78045100255))
+* wire the local gate and the release chain ([4f53daa](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/4f53daa47460b7a1b986a7bda3d2b08eb4f48946))
+
+
+### Reverts
+
+* remove the demo recording that showed real session titles and paths ([ede5577](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/ede5577fb20e683b2bd0ff4aef4bdc23f890b5c2))
+
+
+### Documentation
+
+* prepare Session Fleet 0.3.0 upgrade guidance ([7895a09](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/7895a091f621427df9f827e627bf777293f2425b))
+* prepare Session Fleet 0.5.0 release ([f008658](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/f0086580cdebae9816dc5c01e7916a621dbfa1da))
+
+
+### Code Refactoring
+
+* trim Session Fleet to its evidenced surface ([#13](https://github.com/Sivan757/dsh-plugin-session-fleet/issues/13)) ([de74054](https://github.com/Sivan757/dsh-plugin-session-fleet/commit/de74054a6ace4fbcb263a4d3cea9e554798d97e1))
+
 ## [0.9.0](https://github.com/Sivan757/dsh-plugin-session-fleet/compare/dsh-plugin-session-fleet-v0.8.0...dsh-plugin-session-fleet-v0.9.0) (2026-11-20)
 
 
