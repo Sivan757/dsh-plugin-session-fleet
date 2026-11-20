@@ -1,161 +1,113 @@
-# dsh-plugin-session-fleet
+<img src="https://raw.githubusercontent.com/Sivan757/dsh-plugin-session-fleet/main/icon.png" alt="Session Fleet" width="64" height="64" />
 
-Session Fleet gives a DeepSeek Harness agent six tools to find relevant session history, read original evidence, and create or message another session.
+# Session Fleet
 
-English | [中文](README.zh.md)
+`dsh-plugin-session-fleet`
 
-## Install
+**Find the other sessions working in the same checkout, then agree on who touches what, without leaving the conversation.**
 
-```sh
-dsh plugin --profile <profile> add dsh-plugin-session-fleet
-```
+Several sessions can share one workspace. When two of them edit the same files or stage to the same Git index, one overwrites the other. Session Fleet gives an agent three things it otherwise lacks: a way to see which peers are active, a way to read what a peer already did, and a way to send one scoped proposal and wait for the answer.
 
-The bundle patch is opt-in: it inserts the `tool-session-fleet` row with conservative defaults. Enable **Session fleet** in the Plugins page after install.
+If this plugin is useful to you, a ⭐ on [GitHub](https://github.com/Sivan757/dsh-plugin-session-fleet) is appreciated.
 
-## Unreleased changes since 0.5.0
+English | [简体中文](README.zh.md) | [npm](https://www.npmjs.com/package/dsh-plugin-session-fleet)
 
-`search_sessions` returns with a different implementation: it owns and refreshes its own index instead of calling a host index, because every default deployment mounts the Host session-query service with `openAt: never`, so the tool always failed, and installations that do enable an index already have the Host `session_search` tool. `list_sessions` with a title query covers discovery without an index. The injected coordination policy shrank from about 4,200 to 320 characters without changing the guidance it states.
+[![npm version](https://img.shields.io/npm/v/dsh-plugin-session-fleet)](https://www.npmjs.com/package/dsh-plugin-session-fleet) [![License](https://img.shields.io/github/license/Sivan757/dsh-plugin-session-fleet)](https://github.com/Sivan757/dsh-plugin-session-fleet/blob/main/LICENSE)
 
-The coordination trigger now leads the injected policy: when another session’s unfinished work is known or suspected, shared operations (touching its files, using the shared Git index, whole-repository formatting or validation, remounting a shared runtime, exclusive resources) require discover → inspect → propose → agreement, and none of them runs in parallel with that check. `send_to_session.message` now presents the structured objects before the plain-string branch, and its description asks for an object with `kind` instead of JSON-encoded text. The `accept` and `release` branches no longer expose a `next` property in the tool schema; runtime behavior is unchanged (`next` remains available on `block`, `update`, and `complete`). A model-behavior evaluation suite lives in `evals/` (see Development).
+[Demo](#demo) · [Quick start](#quick-start) · [What it does](#what-it-does) · [Everyday use](#everyday-use) · [Compatibility](#compatibility) · [Configuration](#configuration) · [FAQ](#faq)
 
-## Upgrade from 0.4.0
+## Demo
 
-Version 0.5.0 adds pending-message management and readable inspection results. Structured coordination defaults to next-step delivery (`steer`), while strings retain next-turn delivery (`queue`). Explicit `delivery` overrides the default. Read mode adds bounded top-level `text` with clipping metadata and keeps the complete original `event`. `manage_session_inbox` adds inspection, revision-checked replacement and withdrawal of pending peer input. Send receipts now include a `revision`. Queue previews show the message kind, sender hint and summary. The published 0.4.0 release defaults every message to `queue` and includes neither these readable fields nor pending-message management.
+<img src="https://raw.githubusercontent.com/Sivan757/dsh-plugin-session-fleet/main/docs/screenshots/demo.gif" alt="Demo: ask which sessions are active, then read the compact peer list" width="100%" />
 
-## Upgrade from 0.3.0
+1. **Ask who is working.** One question in an ordinary session.
+2. **Read a compact answer.** The model calls `list_sessions` with a status and a time window, so it searches eleven rows instead of every session on the machine.
+3. **Decide from evidence.** The answer names the peer, its working directory and the last time it moved, and it separates "running now" from "recently active". Subagent sessions stay out of the count.
 
-Version 0.4.0 adds title filtering, literal search within one session when the full-text index is disabled, and a tool-call view with failure filtering and fixed-boundary pagination. Structured peer messages and per-agent planning guidance help agents agree on an owner and work scope before overlapping changes.
+The storyboard was captured from an isolated profile with real model turns. Final states are held longer than transitions; no latency is implied.
 
-The five tool names and plain-string messages remain compatible. Cross-session full-text search still requires the Host index. Coordination records express bilateral agreements; they do not implement resource locks or automatically release ownership. See the proactive coordination section for the message format and conflict rules.
+## Quick start
 
-## Upgrade from 0.2.2
+1. In the DSH Web GUI, open **Plugins** in the sidebar.
+2. Press **Add plugin**, type `dsh-plugin-session-fleet`, then install it.
+3. Enable **Session Fleet** in the plugin list, then restart DSH.
+4. In any session, ask _"which sessions are working in this checkout?"_ The agent now has the Fleet tools.
 
-Version 0.3.0 adds `inspect_session` to the four tools published in 0.2.2. List and search consumers must follow `hasMore` and `nextCursor` to continue beyond the first page. An accepted delivery is admission to the native queue, not task completion. Keep its `messageId` and inspect the target before retrying an unknown persistence outcome.
+Terminal alternative: `dsh plugin --profile <name> add dsh-plugin-session-fleet`, then add the `tool-session-fleet` row through your profile patch. The plugin is opt-in: installing it does not mount the tools until the profile carries the row.
 
-Inspection defaults to an outline with native detail calls. Request `transcript: true` explicitly for a temporary text export. Physical source locations depend on the Host and backend. Indexed full-text searches retain the Host tokenizer.
+## What it does
 
-## Tools installed per agent
+### Discovery
 
-- `search_sessions` runs one literal full-text query against the plugin-owned SQLite FTS5 index at `~/.dsh/storages/session-fleet-search.sqlite`. The tool keeps it current itself: each call reindexes at most 50 changed session logs within a 3 s budget, keyed by file size and mtime, so it never depends on the host session-query engine. Terms in `query` combine with AND and `limit` bounds returned sessions; the index is a snapshot, so very recent turns may be missing.
-- `list_sessions` lists visible sessions with status, activity, and working directory, and starts none of them. Its optional `query` matches a literal, case-insensitive title substring of 1–500 UTF-16 units, independently of the full-text index. Its default page size is the smaller of 20 and `maxListRows`; `hiddenSubagentSessions` counts only ownership exclusions, independently of a cwd filter.
-- `inspect_session` defaults to `mode: "outline"`: a clipped outline, an optional native `source.location`, and executable `detailAccess` examples. Use `mode: "search"` with `query` to find events in that session, then `mode: "read"` with `seq` to read top-level text, the complete original event and bounded neighboring summaries. Use `mode: "calls"` to navigate tool inputs, results, and failures without loading their bodies. Set `transcript: true` only in outline mode for the existing private text projection.
-- `manage_session_inbox` lists pending peer input without starting the target, or replaces/withdraws one pending occurrence with its native id and expected revision. It protects human input and consumed history. See pending-message management below.
-- `create_session` creates an independent ordinary conversation and accepts either an explicit `cwd` or an explicit `workspace_id`. The created session is attached to a workspace so it appears in the session list: an explicit `cwd` attaches to an existing workspace for that path (never the caller’s when the path differs), and with neither parameter it inherits the caller’s workspace, falling back to the caller’s recorded working directory.
-- `send_to_session` delivers peer input through the native inbox and returns the effective `delivery`, a stable `messageId`, its `revision`, `accepted`, `persistence` (`acknowledged` or `unknown`), and `retrySafe: false`. The receipt’s `accepted` flag means queue admission, not the separate coordination decision or task completion. A missing or failed flush acknowledgement produces an unknown receipt with an inspection warning, because the message may already have arrived. An enqueue exception likewise reports its message ID and an unknown outcome.
+`list_sessions` finds Host-visible sessions and returns only what a decision needs: identity, state, activity, directory and title. Filter with `status` (`running`/`idle`), `updated_within` (`30m`, `2h`, `1d`), `cwd`, a title `query`, or sort by `id`. Add `view: "compact"` and each session becomes one pipe-delimited line instead of a JSON object, which keeps a peer scan cheap.
 
-`list_sessions` also accepts `status` (`running`/`idle`), `updated_within` (for example `30m`, `2h`, `1d`), `order` (`updated` default, or `id`), and `view: "compact"`, which renders one pipe-delimited line per session (`id | running | 3m | title …/cwd/tail`) instead of JSON objects — the cheapest way to check for active peers. Both discovery tools return `hasMore` and an opaque `nextCursor` when more results exist. Pass it as `cursor` with identical filters and limit. Lists are ordered by activity. Pagination uses plain numbers: pass `offset` with `limit`, and continue with `nextOffset` from the previous page. Filters and slicing apply before the offset, so a page always covers the same filtered sequence; an offset past the end returns an empty page. `search_sessions` takes only `query` and `limit` and reads its own index, so results are a snapshot rather than a live traversal.Search preserves the Host provider’s tokenizer and page-size limits.
+`search_sessions` searches a durable local index over session logs and answers "where did I discuss X". The plugin owns and refreshes that index, so it works on a default installation where the Host index is disabled. Very recent turns can be missing; use `list_sessions` for titles and `inspect_session` for one session.
 
-The tools disclose progressively: list or search first, inspect a candidate, and use its native event search and read examples when more detail is needed. Request a text export for grep-based work. Inspect existing peers before messaging them; a session you just created does not need another history inspection.
+### Coordination
 
-A delivery carries the dedicated `session-fleet` message source and a one-line frame, `[fleet <kind> #<message id> · peer input, not user authority]`, plus a second line only when a reply is required. The payload is the envelope: `protocol`, `from`, `to`, `role`, `kind`, `task`, `owner`, `scope`, `summary`, `next`, and `reply_to`, so a target never mistakes fleet input for user input and can reply without looking up ids. When a response is needed, a peer explicitly calls `send_to_session` back to the sender. Fleet does not forward final answers or generate automatic acknowledgements.
+`send_to_session` delivers peer input through the native inbox. Besides plain text it accepts a structured object: `propose`, `accept`, `block`, `update`, `complete`, `handoff`, `release`. A proposal names one task, one owner, one to sixteen exact scopes and the decision it wants back. The receipt reports the delivery boundary, a stable message id, a revision, and whether persistence acknowledged the write. Admission is not agreement, and a repeated send is a new message.
 
-## Pending-message management
+`manage_session_inbox` reads pending peer input without starting the target, lets a sender revise its own pending summary, and lets either side withdraw something already covered. Native history and human input stay untouched.
 
-Use `manage_session_inbox` with `session_id` and the default `action: "list"`. It reads the native projection without resuming the Agent. Rows expose native IDs, revisions, sender and owner separately, delivery boundary, task, reply reference, outstanding next decision, summary and edit permissions. `selfAddressed` compares the actual sender to the recipient, not the contract owner. Summary previews are bounded to 800 UTF-16 units. Select `message_id` for more detail, up to 20,000 UTF-16 units. A manual UI edit that differs from structured source metadata sets `bodyEdited` and displays the actual payload.
+### Reading a peer
 
-Pagination uses `limit`, `hasMore` and an opaque `nextCursor`. Pending-input changes invalidate continuations. `completionMessageId` points to a pending completion from the same sender for the exact same reply reference. Check its coverage before discarding earlier findings. Age or a similar task name alone does not establish that input is obsolete.
+`inspect_session` returns an outline with follow-up calls: search inside one session, read one event with neighbours, or list tool calls and failures with pagination. It reads the Host-authorized event log, so an answer cites `seq` numbers a reviewer can check.
 
-For `action: "replace"`, provide `message_id`, `expected_revision` and `text`. Only the original sender can replace a delivery. Text replaces the cumulative summary of a structured message or the body of a string message. The native id, sender, contract kind, task, owner, scope and queue position stay fixed. Send a new proposal for a different agreement. Save the returned revision for the next update.
+### Creating a peer
 
-For `action: "withdraw"`, provide the id and expected revision. The sender can retract its pending delivery, and the recipient can remove peer input from its own inbox. Neither action edits human input or consumed messages. A changed or consumed occurrence fails without appending another message. Mutations can resume a cold Agent to access its inbox. They preserve the native event audit trail, do not start a model turn and do not undo ownership agreements. Cross-workspace mutation requires `allowCrossWorkspace`, and subagent mutation is always refused.
+`create_session` opens an independent ordinary session in a chosen workspace or directory, and attaches it to that workspace so it appears in the session list. It does not create a Team worker or a shared task lifecycle; use the native subagent tools for delegated work.
 
-Keep independent findings when updating a summary. A completion can replace the need for earlier notifications only when it covers their evidence. Reading a result through inspection does not withdraw pending input. Delivery receipts remain historical admission evidence after withdrawal.
+## Everyday use
 
-New previews start with `[Fleet <kind> · <sender hint>] <summary>`. On load, attached Agents' old Fleet prefaces are refreshed in place. Their IDs, source records and payload remain intact, including payload coalesced with the preface into a single text block. Cold Agents are not activated for a preview refresh. The original native log remains available.
-
-## Proactive coordination
-
-Use native Team/subagent tools for delegated reviews and owned subtasks when those tools are available and authorized. `create_session` does not establish Team membership or a shared task lifecycle. If delegation is unavailable or unauthorized, do the work locally unless the user asks for an independent ordinary conversation. Fleet coordinates existing independent sessions.
-
-Structured messages default to `steer`: pending feedback enters the next admitted step of a busy agent, without cancelling its running tools. Strings default to `queue`, which waits for the current turn to end. Explicit `delivery` selects either boundary. Use `queue` for information that can wait; waiting inside the active turn cannot consume next-turn replies. Batch related nonblocking findings into one `update` or `complete`, and report blockers promptly. Reading feedback with `inspect_session` does not dequeue it. Recognize already handled task phases when explicitly queued messages later arrive.
-
-The per-agent policy prompts discovery before shared writes, exclusive-resource use or expensive overlapping work. It rechecks changed scope, owner or dependencies, conflicts and handoffs. Independent short reads do not require a scan or broadcast. Discovery and cross-workspace authorization use recorded session cwd, which may differ from command cwd. The policy supplies that recorded directory; an empty cwd listing does not exclude related tasks or shared resources elsewhere. Within a native Team, use its task and ownership tools.
-
-For coordination, `send_to_session.message` also accepts a structured object. Plain strings remain supported. TypeScript consumers can import `CoordinationRecord` for the native message source metadata. The minimal handshake is `propose → accept` or `block`. A proposal names one `task`, explicit `owner`, 1–16 exact `scope` identities with access mode, a short `summary`, and the `next` decision/checkpoint. For example:
-
-```ts
-await tools.send_to_session({
-  session_id: peerSession,
-  message: {
-    kind: 'propose',
-    task: 'Coordinate auth validation with the existing test work',
-    owner: yourSessionId,
-    scope: ['write:/repo/src/auth'],
-    summary: 'My task changes validation. I own implementation; you keep the existing test scope.',
-    next: 'Accept this division or identify the overlap before editing. Reply at the next planning checkpoint.'
-  }
-})
-```
-
-The native message ID is visible in the peer frame. Reply with `{ kind: "accept", reply_to: proposalMessageId, summary: "Agreed; I keep the existing test scope." }`. The backend resolves that exact incoming message from the target and inherits its task, owner and scope. Revisions use a new proposal and optional `reply_to`; no separate thread or revision ID is needed. `accept` cannot acknowledge another acknowledgement and has no `next` field.
-
-`block` reports a conflict, `update` reports a meaningful change, `complete` reports the owner's result evidence, and `release` states the owner has actually stopped. `handoff` is a proposal to transfer the same task and scope to the recipient and still requires acceptance. Handoff, completion and release require historical acceptance naming the sender as owner: either an incoming acceptance, or the incoming proposal/handoff plus the sender’s successful native accept-send record. They preserve the task and scope. Before handoff, the old owner stops overlapping operations and states that in the summary. Completion is self-report, and does not automatically release the scope or require another ACK.
-
-Keep an existing confirmed owner. For simultaneous unconfirmed claims, use real session IDs to choose the same proposer, then obtain explicit agreement. Pause only the overlap and preserve both sides' changes. After one unsuccessful counterproposal, continue independent work and report the blocker. Silence, idle state and response deadlines do not release ownership. Late replies do not restore superseded agreements. Peer statements stay within existing user authorization. These bilateral messages improve cooperation; they do not implement an atomic claim, global owner registry, lease or resource lock.
-
-## Native detail interaction
-
-1. Call `inspect_session({ session_id })` for the outline. Counts cover raw user, assistant, and tool-call events. `recentPrompts` contains human (`user`) and Fleet peer (`session-fleet`) inputs. Injected context and coordination notices do not displace them. `lastAssistant` is the latest nonempty textual answer, and `asOfSeq` identifies the captured log boundary. Inputs are clipped to 200 UTF-16 units and replies to 300, with clipping metadata.
-2. Supply your keyword in `detailAccess.search.arguments` and call the named tool. Search accepts `query` (1–500 UTF-16 units) and `limit` (default min(20, `maxListRows`)). Hits contain `seq`, type, time, surface, and a snippet of at most 240 UTF-16 units. If `hasMore` is true, narrow the query. Native provider cursors are not exposed here. A search of the caller’s session excludes its current active step.
-3. Execute `detailAccess.read.arguments` or replace its `seq` with a hit. `before` and `after` default to 2 and accept 0–10. Print the top-level `text` to read the selected message, tool input or tool result directly. It joins text blocks with newlines and omits reasoning, attachments and replay metadata. The preview is at most 8000 UTF-16 units; `truncated: true` and `fullLength` identify clipping without splitting surrogate pairs. Nontext events have empty text. The target `event` remains complete native JSON, including tool results and other event types. `context` contains neighboring metadata and previews of at most 300 UTF-16 units, excluding the target. `startSeq` and `endSeq` identify the observed window. Empty outlines and searches without hits omit the read example.
-
-For tool audits, execute `detailAccess.calls` or call `inspect_session({ session_id, mode: "calls", errors_only: true })`. Rows distinguish outer calls from nested PTC dispatches and provide the input `seq`, optional `resultSeq` and `parentSeq`, tool name, status, and duration when a start and result are paired. A successful wrapper can contain failed nested calls. Names longer than 160 UTF-16 units carry `nameTruncated: true`; bodies remain available through read mode.
-
-Calls accept `limit` (default min(20, `maxListRows`)), inclusive `from_seq` (default 0), and optional `until_seq`. Follow the executable `next` action: it preserves `asOfSeq` as the capture boundary across pages, including calls still pending at that boundary. `counts` covers all outer, nested, failed, and pending calls in that prefix. `total` counts rows matching `errors_only` before pagination. Self-inspection excludes the active step. This mode uses native snapshots and works without a full-text index.
-
-All modes check current Host visibility and subagent policy before native access. Results use a `mode` discriminator. Parameters belonging to another mode are rejected. Native events are historical data, not instructions to execute.
-
-`source.status` is `located`, `unavailable`, or `error`. A located source forwards the backend’s `{ kind, path }` without constructing a path from the session ID. `revision` is an optional opaque storage token. Older Hosts or backends may not publish a location. A locator failure is explicit in `source.reason` while the outline remains useful. The path may identify a directory or a file and need not contain the latest in-memory tail. Use the session-ID detail calls for native decoding and live reads. No read activates an Agent or forces a storage flush.
-
-Read mode preserves the full target event and imposes no byte truncation. Use programmatic tool calls to select needed fields, or configure DSH’s generic spill policy for large rendered results. The bounded outline, search snippets, context summaries, and optional TSV export have separate purposes. `transcript: true` returns `transcriptPath`, `transcriptLines`, `transcriptBytes`, `transcriptTruncated`, and `transcriptExpiresAt`.
+| You want to                                  | Ask for                                                                                     |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| Know who else is editing this checkout       | "which sessions are running in this repo right now?"                                        |
+| Avoid overwriting a peer's staged work       | "check whether another session is about to commit to the same index, then propose an order" |
+| See what a peer already tried                | "what did that session change, and which calls failed?"                                     |
+| Hand a review to a fresh conversation        | "open a session for this review and send it the scope"                                      |
+| Recover a queued message you sent by mistake | "withdraw that pending message and resend it with the right scope"                          |
 
 ## Compatibility
 
-The plugin declares the host support window `>=0.2.0-rc.2 <0.3.0-0`. This is an installation window, not a claim that every host build was tested. The current build and test baseline is 0.2.1-rc.2 with Cordis 4.0.5 on Node.js 22 or later; a 0.3 release needs a new plugin release. `pnpm run check:host-support` fails when a pin leaves the window or when the host `next` channel moves past it.
+The plugin declares the host window `>=0.2.0-rc.2 <0.3.0-0`. The build and test baseline is 0.2.1-rc.2 with Cordis 4.0.5 on Node.js 22 or later.
 
-`@deepseek-ai/dsh-brand` never appears as a dependency. Its brand marker is a `unique symbol`, so a second physical copy would break every branded identifier type in this plugin.
+Fleet needs a profile that provides `sessionController` and `workspaceRegistry`, which the desktop and web templates carry. A headless template does not, and the plugin stays pending there. Subagent sessions are hidden by default and delivery to them is always refused. Cross-workspace delivery is off unless `allowCrossWorkspace` is set.
 
 ## Configuration
 
-| Key                   | Default | Meaning                                                                                           |
-| --------------------- | ------- | ------------------------------------------------------------------------------------------------- |
-| `allowCrossWorkspace` | `false` | Permit sending to a session recorded under a different working directory.                         |
-| `includeSubagents`    | `false` | Show subagent-owned sessions in list, inspect, inbox, and search results. Delivery stays refused. |
-| `maxListRows`         | `50`    | Upper bound of one list, inspect, inbox, or search page.                                          |
+| Key                   | Default | Use it to                                                                          |
+| --------------------- | ------- | ---------------------------------------------------------------------------------- |
+| `allowCrossWorkspace` | `false` | Message a session recorded under a different working directory.                    |
+| `includeSubagents`    | `false` | Show subagent sessions in list, inspect, inbox and search. Delivery stays refused. |
+| `maxListRows`         | `50`    | Cap one page of any Fleet listing or search.                                       |
 
-Every other bound is fixed: peer messages are capped at 20,000 UTF-16 units, transcript exports at 8 MiB across 20 files with a one-hour lifetime and 1,024-unit chunks, and `search_sessions` refreshes at most 50 changed logs within 3 seconds per call. Change these settings on the plugin settings page in Plugin Manager; the same values appear in the profile's `cordis.patch.yml`.| `searchCursorMaxSessions` | `10000` | Maximum emitted session IDs remembered per traversal; narrow filters at this bound. |
+Everything else is a fixed internal bound, not a knob.
 
-## Safety model
+## FAQ
 
-- Delivery reaches ordinary top-level sessions only. Subagent children remain the parent agent's internal delegation, and delivery to them is refused unconditionally, whether or not `includeSubagents` is set.
-- Cross-workspace delivery is refused unless `allowCrossWorkspace` is true on the plugin row.
-- Inspection checks Host visibility in every mode. Outline and optional text exports omit tool-result payloads and images; explicit native read mode returns the complete selected event. Discovery and inspection cover Host-visible sessions regardless of the sending cwd restriction.
-- An inbound fleet message is untrusted peer input. The receiving agent can coordinate work within existing user authorization and must obtain approval for actions outside it.
+**Why does the agent scan sessions at all?**
 
-Transcript files use mode 0600 inside a plugin-owned private temp directory. Each TSV row contains `seq`, ISO time, role, source, chunk number, message ID (empty for tool calls), and escaped text. Long events span several rows; backslash, CR, LF, and tab are escaped. Message text and tool-call arguments are included; images, tool results, and other event types are omitted. The byte cap includes complete row metadata. Exports expire by TTL and may be evicted sooner by capacity or plugin unload; stale paths require a new export. Cancellation and unload settle active export I/O before removing the owned directory. The Host still supplies a complete event snapshot, so cold-read decoding is not eliminated.
+A session cannot see the others. Fleet is the only way for it to learn that a peer is editing the same files, and the injected policy tells it to check before a shared write, a shared Git index or a whole-repository operation.
 
-Before retrying an uncertain send, inspect the target and match `messageId` in the recent input rows or explicitly export and grep its transcript. Repeated calls create new messages; Fleet provides no retry deduplication, automatic ACK, or completion receipt. Requested replies are explicit; accept and release do not start another acknowledgement.
+**Does Fleet lock files or enforce ownership?**
 
-Peer input previews omit Fleet’s own framing note while preserving `source`, `senderSessionId`, and `messageId`; exported files retain the note.
+No. Coordination is advisory: the tools carry a proposal and its answer, and the model chooses to honor them. Fleet never takes a lock, never blocks a path, and never releases ownership on a peer's behalf.
 
-## Known limitations and retrieval integration
+**Why is a peer message not a user instruction?**
 
-Indexed full-text search keeps its provider’s word/phrase tokenizer. Two-character Chinese substring recall is not guaranteed on that path. Title queries and the explicit single-session literal fallback do not use that tokenizer. [Sessiongraph](https://github.com/CC19990113/dsh-plugin-sessiongraph) is a separate history index with CJK bigrams. Its 0.3.3 public search interface supports time and entry-kind filters, but uses `offset` and accepts one session ID rather than an authorized ID set; it has no explicit current-surface filter or authorized ID-set input. This bundle does not install or mount Sessiongraph. Fleet therefore retains Host search rather than silently changing search semantics or building another index. Integration needs explicit history-search semantics, bounded authorization filtering, and index-generation/freshness handling.
+Peer input arrives through the native inbox with a separate source tag and a framing note. A message from another agent does not extend what the user authorized, and the injected policy says so.
 
-## Development
+**Why do my own tool calls show as hidden sessions?**
 
-```sh
-pnpm install
-pnpm run check:refactor   # host support window, typecheck, lint, prettier
-pnpm run test             # vitest run
-pnpm run test:evals       # graders for the model-behavior replay fixtures
-pnpm run build            # declarations plus the bundled entry
-```
+Subagent sessions are excluded by default. Set `includeSubagents` if you need to inspect them, but delivery to a subagent is refused in every configuration.
 
-Requires Node.js 22 or later.
+## Documentation
 
-The behavior suite uses real agents with JSONL persistence. A YAML Loader smoke also runs the real Session Controller, workspace registry, JSON storage, queue delivery, inspection, and disposal. The model adapter and unused image/GUI transport are test doubles.
+- [Coordination design and evidence](research/session-coordination-design-2026-11-12.zh.md) records the protocol, the incidents that shaped it, and the measurements behind each change. (Chinese)
+- [Simplification evaluation](research/simplification-plan-2026-11-17.zh.md) records how each tool and prompt was measured and what was removed. (Chinese)
+- [Injected prompts](research/injected-prompts-2026-11-18.md) records exactly what the plugin adds to a session context.
+- [Changelog](CHANGELOG.md) · [License](LICENSE)
 
-### Model-choice evaluation
+## Feedback
 
-`evals/` measures whether a model actually contacts a peer before a shared operation, without any human reminder. `cases.json` holds replayed scenarios distilled from real parallel-session incidents: two positive cases (foreign files failing repository-wide formatting; a shared index and documents with an idle-looking peer) and one negative case (an independent short read that must not trigger contact). `runner.mjs` replays each case through the native `llm.stream` with a frozen toolset (`evals/tools.json`) and simulated read-only results; the grader requires a real `inspect_session` followed by a structured `propose` object before any shared `workspace_operation`, and requires no contact for the negative case. `baseline-policy.txt` pins the 0.5.0 policy for comparison; `none` is the no-plugin baseline. `evals/host.mjs` exposes the runner as a session-scoped `eval_fleet_coordination` tool (temporary bundle; see `tsdown.config.ts`). Run `node --test evals/runner.test.mjs` for grader self-checks; real-model runs are manual because they spend tokens and need a live host.
+Report a bug or request a feature in [GitHub Issues](https://github.com/Sivan757/dsh-plugin-session-fleet/issues).

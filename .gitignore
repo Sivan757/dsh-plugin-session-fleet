@@ -6,3 +6,4 @@ coverage/
 /evals/results/
 /evals/.build/
 /artwork/
+.playwright-mcp/
