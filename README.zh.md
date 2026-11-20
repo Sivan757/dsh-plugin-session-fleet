@@ -1,159 +1,113 @@
-# dsh-plugin-session-fleet
+<img src="https://raw.githubusercontent.com/Sivan757/dsh-plugin-session-fleet/main/icon.png" alt="Session Fleet" width="64" height="64" />
 
-Session Fleet 为 DeepSeek Harness 智能体提供六个工具，用于定位相关会话历史、读取原始证据，以及创建会话或向其他会话发消息。
+# Session Fleet
 
-[English](README.md) | 中文
+`dsh-plugin-session-fleet`
 
-## 安装
+**找到正在同一个 checkout 里干活的另一个会话，在不离开对话的前提下谈好谁动哪块。**
 
-```sh
-dsh plugin --profile <profile> add dsh-plugin-session-fleet
-```
+多个会话可以共用一个工作区。两个会话同时改同一批文件、或同时往同一个 Git 暂存区写入，后写的会覆盖先写的。Session Fleet 给智能体三件它本来没有的东西：看到哪些对端是活跃的、读对端已经做了什么、发出一个带范围的提案并等到答复。
 
-bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用保守默认值。安装后在插件页启用「会话舰队」。
+如果这个插件对你有用，欢迎在 [GitHub](https://github.com/Sivan757/dsh-plugin-session-fleet) 上点一个 ⭐。
 
-## 0.5.0 之后的未发布变更
+[English](README.md) | 简体中文 | [npm](https://www.npmjs.com/package/dsh-plugin-session-fleet)
 
-重新提供 `search_sessions`（实现已更换）：默认部署把宿主 session-query 服务挂成 `openAt: never`，旧实现必然失败；而启用索引的部署本就有宿主 `session_search`，`list_sessions` 的标题查询可在无索引时覆盖发现需求。注入的协作策略从约 4,200 字符压到约 320 字符，语义不变。
+[![npm version](https://img.shields.io/npm/v/dsh-plugin-session-fleet)](https://www.npmjs.com/package/dsh-plugin-session-fleet) [![License](https://img.shields.io/github/license/Sivan757/dsh-plugin-session-fleet)](https://github.com/Sivan757/dsh-plugin-session-fleet/blob/main/LICENSE)
 
-协作触发条件现在置于注入策略最前：当已知或怀疑另一会话存在未完成工作时，共享操作（改动对方文件、使用共享 Git 暂存区、全仓格式化或校验、重挂共享运行时、独占资源）必须完成 发现 → 检查 → 提案 → 获得同意，且不得与该检查并行执行。`send_to_session.message` 的结构化对象分支排在纯字符串之前，描述要求传入带 `kind` 的对象而非 JSON 文本。`accept` 和 `release` 分支的工具 schema 不再暴露 `next` 属性；运行时行为不变（`block`、`update`、`complete` 仍可用 `next`）。`evals/` 目录新增真实模型行为评测套件（见开发一节）。
+[演示](#演示) · [快速开始](#快速开始) · [它能做什么](#它能做什么) · [日常用法](#日常用法) · [兼容范围](#兼容范围) · [配置](#配置) · [常见问题](#常见问题)
 
-## 从 0.4.0 升级
+## 演示
 
-0.5.0 新增待处理消息管理与可读检查结果。结构化协作消息默认在下一步骤投递（`steer`），字符串保持下一轮投递（`queue`）。显式 `delivery` 覆盖默认值。读取模式新增有界的顶层 `text` 和截断元数据，同时保留完整原始 `event`。`manage_session_inbox` 新增待处理对等消息的检查、版本校验更新和撤回。发送收据新增 `revision`，队列预览显示类型、发送者提示与摘要。已发布的 0.4.0 对所有消息默认使用 `queue`，不含这些可读字段或待处理消息管理。
+<img src="https://raw.githubusercontent.com/Sivan757/dsh-plugin-session-fleet/main/docs/screenshots/demo.gif" alt="演示：问一下哪些会话在并行工作，再读紧凑的对端列表" width="100%" />
 
-## 从 0.3.0 升级
+1. **先问谁在干活。** 在任意普通会话里问一句。
+2. **读一份紧凑答案。** 模型带着状态和时间窗调用 `list_sessions`，于是它扫的是十一条记录，而不是整台机器上的所有会话。
+3. **按证据判断。** 答案给出对端、工作目录和最后一次活动时间，并把"正在运行"和"最近活跃"分开；子代理会话不计入。
 
-0.4.0 新增标题筛选、全文索引停用时的单会话字面检索，以及支持失败过滤和固定边界分页的工具调用清单。结构化对等消息与每个 Agent 的计划策略，帮助它们在重叠修改前商定 owner 和工作范围。
+故事板来自隔离 profile 的真实模型轮次。结尾状态比切换停留更久，不暗示实际响应延迟。
 
-五个工具名称与原有字符串消息保持兼容。跨会话全文搜索仍需要宿主索引。协作记录表示双边约定，不提供资源锁或自动释放所有权。消息格式与冲突规则见主动协作一节。
+## 快速开始
 
-## 从 0.2.2 升级
+1. 在 DSH Web GUI 侧边栏打开**插件**。
+2. 点**添加插件**，输入 `dsh-plugin-session-fleet` 并安装。
+3. 在插件列表里启用**会话舰队**，然后重启 DSH。
+4. 在任意会话里问"这个 checkout 里有哪些会话在干活？"，智能体就有 Fleet 工具了。
 
-0.3.0 在已发布 0.2.2 的四个工具基础上新增 `inspect_session`。列表与搜索的调用方需按 `hasMore` 和 `nextCursor` 继续读取后续页。投递被接受只表示进入原生队列，不代表任务完成。请保留 `messageId`，持久化结果未知时先检查目标再决定是否重发。
+命令行安装：`dsh plugin --profile <name> add dsh-plugin-session-fleet`，再通过 profile 补丁加入 `tool-session-fleet` 行。插件是可选开启的：装上并不等于挂载，profile 里有这一行才会提供工具。
 
-检查默认返回概览与原生详情调用。需要临时文本导出时显式传 `transcript: true`。原始存储位置取决于宿主与后端，有索引的全文搜索保留既有宿主分词器。
+## 它能做什么
 
-## 每个智能体安装的工具
+### 发现
 
-- `search_sessions` 对插件自有的 SQLite FTS5 索引（`~/.dsh/storages/session-fleet-search.sqlite`）执行一次字面全文查询。索引由工具自己维护：每次调用最多重扫 50 个变动会话、耗时不超过 3 秒，按文件大小与 mtime 判断变更，因此完全不依赖宿主的 session-query 引擎。`query` 中的多个词按 AND 组合，`limit` 限制返回会话数；索引是快照，最近的对话可能缺失。
-- `list_sessions`：列出可见会话及状态、活跃时间与工作目录，不会激活任何目标。可选 `query` 按标题做不区分大小写的字面子串匹配，接受 1–500 个 UTF-16 代码单元，不依赖全文索引。默认数量取 20 与 `maxListRows` 的较小值；`hiddenSubagentSessions` 只统计所有权隐藏，与 cwd 过滤无关。
-- `inspect_session` 默认 `mode: "outline"`，返回截断概览、宿主可提供的原始 `source.location` 和可执行的 `detailAccess` 示例。用 `mode: "search"` 与 `query` 查询会话内事件，再用 `mode: "read"` 与 `seq` 读取顶层正文、完整原始事件及有界相邻摘要。用 `mode: "calls"` 在不加载正文的情况下定位工具输入、结果和失败项。原有私有文本投影仅在概览模式显式传 `transcript: true` 时导出。
-- `manage_session_inbox`：不激活目标即可查看待处理的对等输入，也可按原生 ID 与期望版本原位更新或撤回一条待处理消息。普通用户输入与已消费历史受到保护，详见待处理消息管理。
-- `create_session`：创建独立的普通对话，接受显式 `cwd` 或 `workspace_id`，两者互斥。新会话会挂载到 workspace 以便出现在会话列表：显式 `cwd` 只挂载到该路径已存在的 workspace（路径不同时绝不误挂到调用者的），两者都省略时继承调用者 workspace，找不到时使用调用者记录的工作目录。
-- `send_to_session`：经原生收件箱投递对等输入，返回实际 `delivery`、稳定 `messageId`、对应 `revision`、`accepted`、`persistence`（`acknowledged` 或 `unknown`）及 `retrySafe: false`。收据的 `accepted` 只表示进入队列，不是另外一条协作接受决定，也不代表处理完成。flush 未确认或失败时仍可能已经送达，因此返回带检查提示的未知收据。入队异常也会在错误中提供消息 ID 并明确结果未知。
+`list_sessions` 查找宿主可见的会话，只返回做判断要用的字段：身份、状态、活跃时间、目录、标题。用 `status`（`running`/`idle`）、`updated_within`（`30m`、`2h`、`1d`）、`cwd`、标题 `query` 过滤，或按 `id` 排序。加上 `view: "compact"`，每个会话变成一行竖线分隔文本而不是 JSON 对象，扫对端的成本更低。
 
-`list_sessions` 另接受 `status`（`running`/`idle`）、`updated_within`（如 `30m`、`2h`、`1d`）、`order`（默认 `updated`，或 `id`）与 `view: "compact"`——后者为每个会话渲染一行竖线分隔文本（`id | running | 3m | 标题 …/目录/尾部`），替代 JSON 对象，是确认活跃并行会话最省 token 的方式。列表按活跃时间排序。分页直接用数字参数：传 `offset` 配 `limit`，用上一页的 `nextOffset` 继续。过滤与排序都在切片之前完成，因此每一页都对应同一过滤序列；offset 超出结果长度时返回空页。标题只是可选提示。
+`search_sessions` 在自持久化索引里搜索会话日志，回答"我在哪儿聊过 X"。索引由插件自己维护和刷新，因此在宿主索引被关闭的默认部署上也能用。最近几轮可能尚未入库；只查标题用 `list_sessions`，读单个会话用 `inspect_session`。
 
-投递消息携带专用的 `session-fleet` 来源标识与单行框架 `[fleet <类型> #<消息 id> · peer input, not user authority]`，仅在需要回复时追加第二行。正文即信封：`protocol`、`from`、`to`、`role`、`kind`、`task`、`owner`、`scope`、`summary`、`next`、`reply_to`；目标因此不会把对等输入当成用户输入，也能直接回复而无需反查 id。确实需要响应时，对端主动调用 `send_to_session` 回复发送者。插件不会自动转发最终回答或生成确认消息。
+### 协调
 
-## 待处理消息管理
+`send_to_session` 经原生收件箱投递对端输入。除纯文本外它也接受结构化对象：`propose`、`accept`、`block`、`update`、`complete`、`handoff`、`release`。提案写明一个任务、一个 owner、1–16 个精确范围，以及它想要回的答复。收据给出投递边界、稳定的消息 ID、版本号，以及持久化是否确认写入。入队不等于同意，重复发送就是一条新消息。
 
-以 `session_id` 调用 `manage_session_inbox`，默认 `action: "list"`。它直接读取原生投影，不恢复或激活 Agent。条目分开显示原生 ID、版本、发送者、owner、投递边界、任务、回复引用、待决下一步、摘要和修改权限。`selfAddressed` 比较真实发送者与收件人，不把任务 owner 当成发送者。摘要预览至多 800 个 UTF-16 单元，传 `message_id` 可查看更完整内容，至多 `maxMessageChars`。手动 UI 编辑造成正文与结构化来源记录不同时，带 `bodyEdited` 并显示实际正文。
+`manage_session_inbox` 不激活目标就能读待处理对端输入；发送方可以改写自己尚未被消费的摘要，双方都能撤回已被覆盖的内容。原生历史和人类输入不受影响。
 
-分页使用 `limit`、`hasMore` 和不透明 `nextCursor`，待处理输入变化会使旧游标失效。`completionMessageId` 指向同一发送者、同一精确回复引用的待处理完成通知。撤回早期发现前先核对它的覆盖范围，不能仅凭时间较久或任务名称相似就判定内容过时。
+### 读对端
 
-以 `action: "replace"` 传 `message_id`、`expected_revision` 和 `text`，只有原发送者能更新。对结构化消息更新累计摘要，对字符串消息更新正文。原生 ID、发送者、协作类型、任务、owner、scope 和队列位置保持不变。改变约定需发新提案，下一次更新使用本次返回的新版本。
+`inspect_session` 先返回概览并给出后续调用入口：在单个会话内搜索、读取某条事件及其邻居、或分页列出工具调用与失败。它读的是宿主授权后的事件日志，因此答案里给出的 `seq` 可供复核。
 
-以 `action: "withdraw"` 传 ID 与期望版本，发送者可撤回自己的待处理投递，收件人可移除自己收件箱中的对等输入。普通用户输入和已消费消息不可修改。版本变化或消息已被消费时拒绝操作，不追加另一条消息。修改时可恢复冷 Agent 以访问收件箱，但不启动模型轮次，保留原生事件审计，也不撤销所有权约定。跨工作区修改需要 `allowCrossWorkspace`，对子代理的修改始终拒绝。
+### 建对端
 
-更新摘要时保留独立发现，完成通知只有覆盖早期证据时才足以替代旧通知。检查结果不等于撤回待处理输入，撤回后原发送收据仍是历史入队证据。
+`create_session` 在指定工作区或目录下开一个独立普通会话，并挂载到该工作区，使它出现在会话列表里。它不建立 Team 成员关系，也不建立共享任务生命周期；委派工作请用原生 subagent 工具。
 
-新预览以 `[Fleet <类型> · <发送者提示>] <摘要>` 开头。加载时会原位刷新已挂载 Agent 的旧 Fleet 前缀，ID、来源记录与正文保持原值，也兼容提示与正文合并在同一文本块的旧输入。不会为刷新预览激活冷 Agent，原生历史仍可查。
+## 日常用法
 
-## 主动协作
-
-委派审查或有归属的子任务时，若原生 Team/subagent 工具可用且已获授权，优先使用它们。`create_session` 不建立 Team 成员关系或共享任务生命周期。委派不可用或未获授权时，先自行完成工作，除非用户要求独立的普通对话。Fleet 用来协调既有的独立会话。
-
-结构化消息默认 `steer`：忙碌 Agent 的待处理反馈在下一次获准步骤进入模型，不取消正在运行的工具。字符串默认 `queue`，等待当前轮结束；显式 `delivery` 可选择任一边界。可等待的信息才使用 `queue`，在活动轮内等待无法消费下一轮回复。将相关且不阻塞的发现合并为一条 `update` 或 `complete`，及时报告阻塞。通过 `inspect_session` 读取反馈不会使其出队，显式排队的消息后来到达时，应识别已经处理过的任务阶段。
-
-每个 Agent 的策略会在共享写入、独占资源使用或明显昂贵的重复工作之前提示发现相关会话，并在范围、owner、依赖变化、冲突或交接时重新核对。独立短只读工作无需扫描或广播。发现与跨工作区授权使用会话记录目录，它可能不同于命令执行目录。策略提供该记录目录，目录列表为空仍不能排除其他目录中的相关任务或共享资源。原生 Team 内仍使用其任务与归属工具。
-
-协作时，`send_to_session.message` 也接受结构化对象，原有字符串继续可用。TypeScript 使用方可导入 `CoordinationRecord` 读取原生消息来源元数据。最小握手是 `propose → accept` 或 `block`。提案明确一个 `task`、显式 `owner`、1–16 个含访问方式的精确 `scope` 标识、简短 `summary`，以及 `next` 中所求的决定和检查点。例如：
-
-```ts
-await tools.send_to_session({
-  session_id: peerSession,
-  message: {
-    kind: 'propose',
-    task: '协调认证输入校验与既有测试工作',
-    owner: yourSessionId,
-    scope: ['write:/repo/src/auth'],
-    summary: '我的任务修改校验。我负责实现，你继续负责原有测试范围。',
-    next: '请在下一计划检查点接受分工或指出冲突，确认前先不要修改重叠范围。'
-  }
-})
-```
-
-对等提示中显示原生消息 ID。回复 `{ kind: "accept", reply_to: proposalMessageId, summary: "同意，我继续负责原有测试范围。" }`，后端核对它确实引用了从该目标收到的结构化消息，并继承任务、owner 和 scope。修改约定就发新提案，通过可选 `reply_to` 关联旧消息，不另加 thread 或 revision ID。`accept` 不能确认另一个确认，也不能带 `next`。
-
-`block` 报冲突，`update` 报实质变化，`complete` 报 owner 的结果证据，`release` 表示 owner 实际已停止。`handoff` 是将同一任务和范围转交给接收者的提议，仍需接受。交接、完成和释放需要明确当前发送者为 owner 的历史接受凭据：收到的接受消息，或原提案/交接及本人成功发出 accept 的原生调用记录。交接保持原任务与范围，旧 owner 先停止重叠操作，并在 summary 中说明。完成只是自报结果，不自动释放范围，也不强制另一轮 ACK。
-
-优先保持已有确认 owner。双方同时新声明时，用真实会话 ID 选出共同提案人，再明确接受。只暂停重叠部分，保留双方已有修改。一轮反提案仍不一致，就继续独立工作并报告阻塞。静默、空闲和应答期限都不表示释放。迟到回复不能恢复已被替代的约定。对等声明不扩大用户授权。这套双边消息改善协作，不提供原子认领、全局唯一 owner、租约或资源锁。
-
-## 原生详情交互
-
-1. 调用 `inspect_session({ session_id })` 读取概览，计数覆盖原始用户、助手与工具调用事件。`recentPrompts` 只列人类（`user`）和 Fleet 对等输入（`session-fleet`），注入上下文与协调通知不会挤占它们。`lastAssistant` 指向最近一条非空的文本回复，`asOfSeq` 标明所取日志的边界。输入至多 200 个 UTF-16 代码单元，回复至多 300 个，并保留截断标识。
-2. 在 `detailAccess.search.arguments` 中补充关键词，再调用给出的工具。搜索接受 `query`（1–500 个 UTF-16 代码单元）和 `limit`（默认取 20 与 `maxListRows` 的较小值）。命中返回 `seq`、类型、时间、视图与至多 240 个 UTF-16 代码单元的片段。`hasMore` 为 true 时缩小条件，此模式不暴露 provider 游标。查询调用者自身会话时排除当前活动 step。
-3. 执行 `detailAccess.read.arguments`，或将其中 `seq` 替换成命中序号。`before` 与 `after` 默认 2，范围 0–10。打印顶层 `text` 即可直接阅读选中消息、工具输入或工具结果。它以换行连接文本块，省略推理、附件及重放元数据，至多 8000 个 UTF-16 代码单元，截断时带 `truncated: true` 和 `fullLength`，不拆开代理对。非文本事件返回空正文。目标 `event` 仍保留完整原生 JSON，包括工具结果与其他事件类型。`context` 只含相邻事件的元信息与至多 300 个 UTF-16 代码单元的预览，不重复目标。`startSeq` 与 `endSeq` 标明观察到的窗口。空会话或搜索无命中时不提供读取示例。
-
-分析工具调用时，执行 `detailAccess.calls`，或调用 `inspect_session({ session_id, mode: "calls", errors_only: true })`。清单区分外层调用与嵌套 PTC 分发，提供输入 `seq`、可选的 `resultSeq` 和 `parentSeq`、工具名、状态，以及开始和结果成功配对时的耗时。外层程序成功仍可能包含失败的嵌套调用。工具名超过 160 个 UTF-16 代码单元时带 `nameTruncated: true`，完整正文通过读取模式取得。
-
-调用清单接受 `limit`（默认取 20 与 `maxListRows` 的较小值）、包含起点的 `from_seq`（默认 0）和可选 `until_seq`。执行返回的 `next` 动作继续分页，它将 `asOfSeq` 固定为后续页的取证边界，包括在该边界仍未完成的调用。`counts` 统计这一前缀内全部外层、嵌套、失败和未完成调用，`total` 统计分页前符合 `errors_only` 的调用数。检查自身会话时排除当前活动 step。此模式使用原生快照，不依赖全文索引。
-
-每种模式都在原生访问前检查当前 Host 可见性与子会话策略。结果用 `mode` 区分，混入其他模式的参数会报错。原生事件是历史数据，不是待执行指令。
-
-`source.status` 为 `located`、`unavailable` 或 `error`。定位成功时原样转交后端的 `{ kind, path }`，不根据会话 ID 拼接路径。`revision` 是可选的不透明存储标记。较旧宿主或某些后端可能不提供位置。定位异常会在 `source.reason` 中明确报告，概览仍可使用。路径可能指向目录或文件，也不保证包含最新内存尾部；请使用按会话 ID 的详情调用，让宿主负责解码与实时读取。读取不会激活 Agent 或强制 flush。
-
-读取模式保留完整目标事件，不按字节截断。可在程序化工具调用中只选取需要的字段，或配置 DSH 通用 spill 策略限制较大结果的内联显示。有界概览、搜索片段、相邻摘要和可选 TSV 导出各有用途。`transcript: true` 仍返回 `transcriptPath`、`transcriptLines`、`transcriptBytes`、`transcriptTruncated` 与 `transcriptExpiresAt`。
+| 你想做的事                  | 可以这样问                                                   |
+| --------------------------- | ------------------------------------------------------------ |
+| 知道还有谁在改这个 checkout | "现在这个仓库里有哪些会话在跑？"                             |
+| 避免覆盖对端已暂存的改动    | "查一下有没有别的会话正要提交同一个暂存区，然后约定先后顺序" |
+| 看对端已经试过什么          | "那个会话改了什么，哪些调用失败了？"                         |
+| 把一次评审交给新会话        | "为这次评审开一个会话，把范围发给它"                         |
+| 撤回发错的排队消息          | "把那条待处理消息撤回，用正确的范围重发"                     |
 
 ## 兼容范围
 
-插件声明宿主支持窗口 `>=0.2.0-rc.2 <0.3.0-0`。这是允许安装的窗口，不代表每个宿主版本均已实测。当前构建与测试基线为 0.2.1-rc.2、Cordis 4.0.5、Node.js 22 或更高版本；宿主发布 0.3 时需要新的插件版本。任何一个 pin 离开窗口，或宿主 `next` 通道越过上界，`pnpm run check:host-support` 都会失败。
+插件声明宿主窗口 `>=0.2.0-rc.2 <0.3.0-0`。构建与测试基线是 0.2.1-rc.2、Cordis 4.0.5、Node.js 22 或更高。
 
-`@deepseek-ai/dsh-brand` 绝不作为 dependency 出现。它的 brand 标记是 `unique symbol`，第二份物理副本会让本插件所有带 brand 的标识符类型失效。
+Fleet 需要 profile 提供 `sessionController` 和 `workspaceRegistry`，桌面与 Web 模板含这两个服务；headless 模板没有，插件会停在 pending。子代理会话默认隐藏，投递给子代理在任何配置下都被拒绝。跨工作区投递默认关闭，除非设置 `allowCrossWorkspace`。
 
 ## 配置
 
-| 键                    | 默认    | 含义                                                             |
-| --------------------- | ------- | ---------------------------------------------------------------- |
-| `allowCrossWorkspace` | `false` | 允许向记录在不同工作目录下的会话发送消息。                       |
-| `includeSubagents`    | `false` | 在列表、检查、收件箱与搜索结果中显示子会话；向它们投递仍被拒绝。 |
-| `maxListRows`         | `50`    | 单次列表、检查、收件箱或搜索页面的数量上限。                     |
+| 键                    | 默认    | 用途                                                       |
+| --------------------- | ------- | ---------------------------------------------------------- |
+| `allowCrossWorkspace` | `false` | 允许向记录目录不同的会话投递。                             |
+| `includeSubagents`    | `false` | 在列表、检查、收件箱与搜索中显示子代理会话；投递仍被拒绝。 |
+| `maxListRows`         | `50`    | 任何 Fleet 列表或搜索的单页上限。                          |
 
-其余上限由插件固定：单条对等消息 20,000 个 UTF-16 单元，导出文件 8 MiB / 最多 20 个 / 一小时有效 / 每块 1,024 单元，`search_sessions` 每次最多在 3 秒内重扫 50 个变动日志。这些设置可在 Plugin Manager 的插件设置页修改，也会同步写入 profile 的 `cordis.patch.yml`。| `searchCursorMaxSessions` | `10000` | 单次遍历记忆的已返回会话 ID 上限，到达时需缩小条件。 |
+其余上限是固定内部约束，不作为配置项暴露。
 
-## 安全模型
+## 常见问题
 
-- 投递只到达普通顶层会话。子智能体属于父智能体的内部委派，无论 `includeSubagents` 是否开启，向其投递都被无条件拒绝。
-- 除非插件行的 `allowCrossWorkspace` 为 true，跨工作目录投递一律拒绝。
-- 检查的每种模式都核对 Host 可见性。概览和可选文本导出省略工具结果正文与图片；显式原生读取模式返回选中事件的完整数据。发现与检查覆盖 Host 可见会话，不受发送时的 cwd 限制。
-- 入站的舰队消息是不可信的对等输入。接收方可在既有用户授权内协调工作，超出该授权的操作仍需取得批准。
+**为什么智能体要扫描会话？**
 
-转录存放于插件自有的私有临时目录，文件权限为 0600。每行 TSV 包含 `seq`、ISO 时间、角色、来源、分块号、消息 ID（工具调用为空）和转义文本。长事件分成多行，反斜杠、CR、LF 与制表符均转义。仅包含消息文本与工具调用参数，省略图片、工具结果及其他事件类型。字节上限包含完整行元信息。文件按 TTL 过期，也可能因容量或插件卸载提前回收；路径失效时重新导出。取消与卸载会等待导出 I/O 结束再删除自有目录。宿主仍提供完整事件快照，因此冷会话解码成本尚未消除。
+单个会话看不到其他会话。Fleet 是它得知对端正在改同一批文件的唯一途径，注入的策略要求它在共享写入、共享 Git 暂存区或全仓操作之前先确认。
 
-重试未知结果的投递前，应检查目标的最近输入，或显式导出转录后按 `messageId` 检索。重复调用会创建新消息，插件不提供重试去重、自动 ACK 或完成回执，确实需要的响应由对端显式发送，accept 和 release 不再产生下一轮确认。
+**Fleet 会锁文件或强制所有权吗？**
 
-对等输入概览省略插件自有提示框，保留 `source`、`senderSessionId` 和 `messageId`；导出文件仍保留提示框。
+不会。协作是建议性的：工具负责传递提案和答复，是否遵守由模型判断。Fleet 不加锁、不阻塞路径、也不会替对端释放所有权。
 
-## 已知限制与检索集成
+**为什么对端消息不能被当成用户指令？**
 
-有索引的全文搜索沿用 provider 的词项/短语分词，该路径不保证中文两字子串召回。标题查询和显式标记的单会话字面过滤不使用该分词器。[Sessiongraph](https://github.com/CC19990113/dsh-plugin-sessiongraph) 是支持 CJK 二元词的独立历史索引。其 0.3.3 公开搜索接口支持时间与条目类型过滤，但使用 `offset`、只接受单个会话 ID，未提供显式的当前消息视图过滤或授权 ID 集合输入。本 bundle 不安装或挂载 Sessiongraph。因此 Fleet 保留宿主检索，避免悄然改变搜索语义或另建索引。后续集成需明确历史搜索语义、设定有界授权过滤，并处理索引代际与新鲜度。
+对端输入经原生收件箱投递，带独立的来源标记和提示框。另一个智能体发来的内容不会扩展用户授权，注入的策略也明确写了这一点。
 
-## 开发
+**为什么我自己的工具调用显示的会话是隐藏的？**
 
-```sh
-pnpm install
-pnpm run check:refactor   # 宿主支持窗口、类型检查、lint、prettier
-pnpm run test             # vitest run
-pnpm run test:evals       # 模型行为回放夹具的评分器自检
-pnpm run build            # 类型声明与打包入口
-```
+子代理会话默认被排除。需要检查时可打开 `includeSubagents`，但投递给子代理在任何配置下都被拒绝。
 
-需要 Node.js 22 或更高版本。
+## 文档
 
-行为测试使用真实 agent 与 JSONL 持久化。YAML Loader 组合验证还运行真实 Session Controller、workspace registry 和 JSON 存储，覆盖创建、队列投递、检查与卸载。模型适配器及未使用的图片、GUI 传输为测试替身。
+- [协作设计与证据](research/session-coordination-design-2026-11-12.zh.md)：协议、塑造它的真实事件，以及每次改动背后的测量。
+- [精简评估](research/simplification-plan-2026-11-17.zh.md)：每个工具和提示词如何被测量、删掉了什么。
+- [注入提示词](research/injected-prompts-2026-11-18.md)：插件到底往会话上下文里加了什么。
+- [变更记录](CHANGELOG.md) · [许可证](LICENSE)
 
-### 模型选择行为评测
+## 反馈
 
-`evals/` 度量模型在没有人工提醒时是否真的会在共享操作前联系对端。`cases.json` 是从真实并行会话事件提炼的回放场景：两个正例（他人文件未过全仓格式化；共享暂存区与文档、对端看似空闲）和一个反例（独立短读不应触发联系）。`runner.mjs` 通过原生 `llm.stream` 回放，工具集冻结在 `evals/tools.json`，只读结果为模拟值；评分要求先真实调用 `inspect_session`、再发出结构化 `propose` 对象，之后才允许共享 `workspace_operation`，反例则要求完全不联系。`baseline-policy.txt` 固定 0.5.0 策略作对照，`none` 为无插件基线。`evals/host.mjs` 将回放封装为会话级 `eval_fleet_coordination` 工具（临时 bundle，见 `tsdown.config.ts`）。评分器自检用 `node --test evals/runner.test.mjs`；真实模型运行消耗 token 且需在线宿主，手动执行。
+在 [GitHub Issues](https://github.com/Sivan757/dsh-plugin-session-fleet/issues) 报告缺陷或提出需求。
