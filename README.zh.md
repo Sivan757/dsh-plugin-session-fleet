@@ -14,7 +14,7 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 ## 0.5.0 之后的未发布变更
 
-移除 `search_sessions`：默认部署把宿主 session-query 服务挂成 `openAt: never`，该工具必然失败；而启用索引的部署本就有宿主 `session_search`，`list_sessions` 的标题查询可在无索引时覆盖发现需求。注入的协作策略从约 4,200 字符压到约 900 字符，语义不变。
+移除 `search_sessions`：默认部署把宿主 session-query 服务挂成 `openAt: never`，该工具必然失败；而启用索引的部署本就有宿主 `session_search`，`list_sessions` 的标题查询可在无索引时覆盖发现需求。注入的协作策略从约 4,200 字符压到约 320 字符，语义不变。
 
 协作触发条件现在置于注入策略最前：当已知或怀疑另一会话存在未完成工作时，共享操作（改动对方文件、使用共享 Git 暂存区、全仓格式化或校验、重挂共享运行时、独占资源）必须完成 发现 → 检查 → 提案 → 获得同意，且不得与该检查并行执行。`send_to_session.message` 的结构化对象分支排在纯字符串之前，描述要求传入带 `kind` 的对象而非 JSON 文本。`accept` 和 `release` 分支的工具 schema 不再暴露 `next` 属性；运行时行为不变（`block`、`update`、`complete` 仍可用 `next`）。`evals/` 目录新增真实模型行为评测套件（见开发一节）。
 
@@ -42,9 +42,9 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 - `create_session`：创建独立的普通对话，接受显式 `cwd` 或 `workspace_id`，两者互斥。新会话会挂载到 workspace 以便出现在会话列表：显式 `cwd` 只挂载到该路径已存在的 workspace（路径不同时绝不误挂到调用者的），两者都省略时继承调用者 workspace，找不到时使用调用者记录的工作目录。
 - `send_to_session`：经原生收件箱投递对等输入，返回实际 `delivery`、稳定 `messageId`、对应 `revision`、`accepted`、`persistence`（`acknowledged` 或 `unknown`）及 `retrySafe: false`。收据的 `accepted` 只表示进入队列，不是另外一条协作接受决定，也不代表处理完成。flush 未确认或失败时仍可能已经送达，因此返回带检查提示的未知收据。入队异常也会在错误中提供消息 ID 并明确结果未知。
 
-`list_sessions` 另接受 `status`（`running`/`idle`）、`updated_within`（如 `30m`、`2h`、`1d`）、`order`（默认 `updated`，或 `id`）与 `view: "compact"`——后者为每个会话渲染一行竖线分隔文本（`id | running | 3m | 标题 …/目录/尾部`），替代 JSON 对象，是确认活跃并行会话最省 token 的方式。两个发现工具均返回 `hasMore`，还有结果时提供不透明的 `nextCursor`。保持过滤参数与 limit 不变，将它作为 `cursor` 继续调用。列表按活跃时间排序。分页直接用数字参数：传 `offset` 配 `limit`，用上一页的 `nextOffset` 继续。过滤与排序都在切片之前完成，因此每一页都对应同一过滤序列；offset 超出结果长度时返回空页。搜索采用动态遍历，每页重新经过宿主授权并排除已返回的会话 ID，新匹配可能出现，不承诺整个结果集来自同一冻结快照。搜索句柄会过期，也可能因容量或卸载失效，最多记住 `searchCursorMaxSessions` 个已返回 ID；达到上限时缩小目录或时间范围。标题只是可选提示。搜索保留宿主 provider 的分词与页大小限制。
+`list_sessions` 另接受 `status`（`running`/`idle`）、`updated_within`（如 `30m`、`2h`、`1d`）、`order`（默认 `updated`，或 `id`）与 `view: "compact"`——后者为每个会话渲染一行竖线分隔文本（`id | running | 3m | 标题 …/目录/尾部`），替代 JSON 对象，是确认活跃并行会话最省 token 的方式。列表按活跃时间排序。分页直接用数字参数：传 `offset` 配 `limit`，用上一页的 `nextOffset` 继续。过滤与排序都在切片之前完成，因此每一页都对应同一过滤序列；offset 超出结果长度时返回空页。标题只是可选提示。
 
-投递消息携带专用的 `session-fleet` 来源标识与对等输入提示，用于向目标表明这是对等智能体输入。确实需要响应时，对端主动调用 `send_to_session` 回复发送者。插件不会自动转发最终回答或生成确认消息。
+投递消息携带专用的 `session-fleet` 来源标识与单行框架 `[fleet <类型> #<消息 id> · peer input, not user authority]`，仅在需要回复时追加第二行。正文即信封：`protocol`、`from`、`to`、`role`、`kind`、`task`、`owner`、`scope`、`summary`、`next`、`reply_to`；目标因此不会把对等输入当成用户输入，也能直接回复而无需反查 id。确实需要响应时，对端主动调用 `send_to_session` 回复发送者。插件不会自动转发最终回答或生成确认消息。
 
 ## 待处理消息管理
 

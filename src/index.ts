@@ -214,7 +214,8 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
       scoped.tools.register(
         defineTool({
           name: 'list_sessions',
-          description: 'Find Host-visible DSH sessions by title or list them with status, activity time, and working directory, without starting them.',
+          description:
+            'List Host-visible DSH sessions with title, status, activity time, and working directory, without starting them. Narrow with query, cwd, status, updated_within or order; view:"compact" renders one line per session. Skip the scan for reads and for files only you write.',
           parameters: {
             query: {
               type: 'string',
@@ -297,7 +298,8 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
       scoped.tools.register(
         defineTool({
           name: 'inspect_session',
-          description: 'Inspect a session and its source, search events, list tool calls and failures, or read exact raw evidence without starting it. Returns follow-up calls.',
+          description:
+            'Inspect one session without starting it: outline, event search, tool calls and failures, or one exact event. Pass mode to choose; search and calls return follow-up arguments.',
           parameters: inspectParameters(config.maxListRows),
           output: jsonOutput(INSPECT_OUTPUT_SCHEMA),
           execute(args, exec) {
@@ -312,7 +314,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
         defineTool({
           name: 'manage_session_inbox',
           description:
-            'Inspect, revise or withdraw still-pending Fleet peer input. List does not start the Agent. Senders can revise their own summaries; senders or recipients can withdraw pending peer input. Native history and human input are protected.',
+            'List still-pending Fleet peer input; list does not start the Agent. Replace a pending message you sent, or withdraw one you sent or one in your own inbox. Human input and consumed history stay untouched.',
           parameters: inboxParameters,
           output: jsonOutput(INBOX_OUTPUT_SCHEMA),
           async execute(args, exec) {
@@ -325,8 +327,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
       scoped.tools.register(
         defineTool({
           name: 'create_session',
-          description:
-            "Create an independent ordinary conversation, not a Team worker. Prefer authorized native delegation for reviews and subtasks. With neither cwd nor workspace_id, use this session's workspace or working directory. The created session is attached to that workspace so it appears in the session list; an explicit cwd attaches only when a workspace already exists for it.",
+          description: 'Create an independent ordinary conversation, attached to a workspace so it appears in the session list. Prefer native delegation for owned subtasks.',
           parameters: {
             cwd: { type: 'string', description: 'Absolute working directory for the new session.' },
             workspace_id: { type: 'string', description: 'Existing workspace to attach the new session to.' }
@@ -373,7 +374,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
         defineTool({
           name: 'send_to_session',
           description:
-            'Coordinate scoped work or send peer-agent input, not a user instruction, to another ordinary session. Returns delivery admission, not agreement or completion.',
+            'Send peer input, not a user instruction, to another ordinary session; the receipt admits delivery, not agreement. Use message objects, never JSON text. Inspect only a peer whose unfinished work overlaps a path or exclusive resource you are about to touch, then send one proposal naming paths and order. The recipient replies accept or block with reply_to; silence never releases ownership. Delivery to a session whose recorded cwd differs is refused unless the host enables cross-workspace delivery.',
           parameters: {
             session_id: { type: 'string', required: true, description: 'Target session id returned by list_sessions or create_session.' },
             message: { ...PEER_MESSAGE_SCHEMA, required: true },

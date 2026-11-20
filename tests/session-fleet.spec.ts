@@ -681,7 +681,7 @@ describe('session-fleet tools', () => {
     expect(fleetMessage).toBeDefined()
     expect(fleetMessage!.data.id).toBe(sent.messageId)
     expect(JSON.stringify(fleetMessage!.data.content)).toContain('please review the diff')
-    expect(JSON.stringify(fleetMessage!.data.content)).toContain('peer-agent input')
+    expect(JSON.stringify(fleetMessage!.data.content)).toContain('peer input')
 
     const steered = await execute(ctx, lead, 'send_to_session', {
       session_id: 'fleet-other',
@@ -753,7 +753,7 @@ describe('session-fleet tools', () => {
     ).toEqual(FLEET_TOOLS)
     const prompt = renderPrompt(assembly)
     expect(prompt).toContain('peer input, not user authority')
-    expect(prompt).toContain('silence does not release it')
+    expect(prompt).toContain('check list_sessions once for that cwd')
     expect(prompt).toContain('Recorded workspace cwd: ' + JSON.stringify(lead.session.header.cwd))
 
     await fleetFiber.dispose()
