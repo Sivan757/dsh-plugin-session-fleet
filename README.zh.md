@@ -36,7 +36,7 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 ## 每个智能体安装的工具
 
-- `search_sessions` 对插件自有的 SQLite FTS5 索引（`searchIndexPath`，默认 `~/.dsh/storages/session-fleet-search.sqlite`）执行一次字面全文查询。索引由工具自己维护：每次调用最多重扫 `searchSyncSessions` 个变动会话、耗时不超过 `searchSyncBudgetMs` 毫秒，按文件大小与 mtime 判断变更，因此完全不依赖宿主的 session-query 引擎。`query` 中的多个词按 AND 组合；`limit` 限制返回会话数，`cwd` 按工作目录前缀过滤。只读，毫秒级返回；但索引是快照、在调用之外刷新，因此最近的对话可能缺失。
+- `search_sessions` 对插件自有的 SQLite FTS5 索引（`~/.dsh/storages/session-fleet-search.sqlite`）执行一次字面全文查询。索引由工具自己维护：每次调用最多重扫 50 个变动会话、耗时不超过 3 秒，按文件大小与 mtime 判断变更，因此完全不依赖宿主的 session-query 引擎。`query` 中的多个词按 AND 组合，`limit` 限制返回会话数；索引是快照，最近的对话可能缺失。
 - `list_sessions`：列出可见会话及状态、活跃时间与工作目录，不会激活任何目标。可选 `query` 按标题做不区分大小写的字面子串匹配，接受 1–500 个 UTF-16 代码单元，不依赖全文索引。默认数量取 20 与 `maxListRows` 的较小值；`hiddenSubagentSessions` 只统计所有权隐藏，与 cwd 过滤无关。
 - `inspect_session` 默认 `mode: "outline"`，返回截断概览、宿主可提供的原始 `source.location` 和可执行的 `detailAccess` 示例。用 `mode: "search"` 与 `query` 查询会话内事件，再用 `mode: "read"` 与 `seq` 读取顶层正文、完整原始事件及有界相邻摘要。用 `mode: "calls"` 在不加载正文的情况下定位工具输入、结果和失败项。原有私有文本投影仅在概览模式显式传 `transcript: true` 时导出。
 - `manage_session_inbox`：不激活目标即可查看待处理的对等输入，也可按原生 ID 与期望版本原位更新或撤回一条待处理消息。普通用户输入与已消费历史受到保护，详见待处理消息管理。
@@ -115,19 +115,13 @@ await tools.send_to_session({
 
 ## 配置
 
-| 键                        | 默认      | 含义                                                          |
-| ------------------------- | --------- | ------------------------------------------------------------- |
-| `allowCrossWorkspace`     | `false`   | 允许向记录在不同工作目录下的会话发送消息。                    |
-| `maxListRows`             | `50`      | 单次列表或搜索响应的数量上限。                                |
-| `maxMessageChars`         | `20000`   | 单条 `send_to_session` 正文的上限。                           |
-| `includeSubagents`        | `false`   | 在列表、搜索与检查中显示子会话，向它们投递仍被拒绝。          |
-| `transcriptMaxBytes`      | `8388608` | 单份导出的 UTF-8 字节上限，包含完整行元信息。                 |
-| `transcriptMaxFiles`      | `20`      | 每个已挂载插件保留文件的上限，较旧导出可能被提前回收。        |
-| `transcriptTtlSeconds`    | `3600`    | 文件存活秒数，范围 1 至 2147483，卸载或容量限制可能提前回收。 |
-| `transcriptChunkChars`    | `1024`    | 转义前每块文本的 UTF-16 代码单元上限，范围 64 至 65536。      |
-| `searchCursorMaxEntries`  | `100`     | 搜索续页句柄保留上限，在请求时清理过期项。                    |
-| `searchCursorTtlSeconds`  | `300`     | 句柄存活秒数，容量或卸载可能使其提前失效。                    |
-| `searchCursorMaxSessions` | `10000`   | 单次遍历记忆的已返回会话 ID 上限，到达时需缩小条件。          |
+| 键                    | 默认    | 含义                                                             |
+| --------------------- | ------- | ---------------------------------------------------------------- |
+| `allowCrossWorkspace` | `false` | 允许向记录在不同工作目录下的会话发送消息。                       |
+| `includeSubagents`    | `false` | 在列表、检查、收件箱与搜索结果中显示子会话；向它们投递仍被拒绝。 |
+| `maxListRows`         | `50`    | 单次列表、检查、收件箱或搜索页面的数量上限。                     |
+
+其余上限由插件固定：单条对等消息 20,000 个 UTF-16 单元，导出文件 8 MiB / 最多 20 个 / 一小时有效 / 每块 1,024 单元，`search_sessions` 每次最多在 3 秒内重扫 50 个变动日志。这些设置可在 Plugin Manager 的插件设置页修改，也会同步写入 profile 的 `cordis.patch.yml`。| `searchCursorMaxSessions` | `10000` | 单次遍历记忆的已返回会话 ID 上限，到达时需缩小条件。 |
 
 ## 安全模型
 
