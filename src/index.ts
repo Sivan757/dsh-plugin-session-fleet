@@ -1,8 +1,7 @@
 /** Scoped model-facing tools for discovering, reading, creating, and messaging DSH sessions. */
 
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 import { SessionSearchIndex } from './search-index.ts'
+import { MAX_MESSAGE_CHARS, SEARCH_SYNC, TRANSCRIPT_LIMITS } from './limits.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { literalQuery } from './discovery.ts'
 import { TranscriptStore } from './transcript.ts'
@@ -39,49 +38,21 @@ export const name = 'tool-session-fleet'
 /** Services required by the Session Fleet tool plugin. */
 export const inject = ['agents', 'sessions', 'sessionController', 'sessionQuery', 'workspaceRegistry', 'tools', 'systemPrompt']
 
-/** Fleet tool routing configuration. */
+/** Fleet tool routing configuration. Values are editable on the plugin settings page. */
 export interface Config {
   /** Whether an agent may message a session recorded under a different cwd. */
   readonly allowCrossWorkspace?: boolean
-  /** Upper bound of one list_sessions response. */
-  readonly maxListRows?: number
-  /** Absolute path to the plugin-owned session-search index built by search_sessions. */
-  readonly searchIndexPath?: string
-  /** Maximum sessions reindexed per search_sessions call. */
-  readonly searchSyncSessions?: number
-  /** Wall-clock budget in milliseconds for one incremental reindex pass. */
-  readonly searchSyncBudgetMs?: number
-  /** Upper bound of one send_to_session message body in UTF-16 code units. */
-  readonly maxMessageChars?: number
   /** Expose subagent-owned sessions to list, search, and read. Delivery stays refused. */
   readonly includeSubagents?: boolean
-  /** Maximum UTF-8 bytes in one exported transcript, including row metadata. */
-  readonly transcriptMaxBytes?: number
-  /** Maximum retained exports for one mounted plugin. */
-  readonly transcriptMaxFiles?: number
-  /** Export lifetime in seconds; capacity eviction or unload may remove it sooner. */
-  readonly transcriptTtlSeconds?: number
-  /** Maximum UTF-16 text units per transcript chunk before escaping. */
-  readonly transcriptChunkChars?: number
+  /** Upper bound of one list, inspect, inbox, or search page. */
+  readonly maxListRows?: number
 }
 
 /** Loader schema for the Session Fleet tool plugin. */
 export const Config: z<Config> = z.object({
-  allowCrossWorkspace: z.boolean().default(false),
-  maxListRows: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(50),
-  searchIndexPath: z.string().default(join(homedir(), '.dsh/storages/session-fleet-search.sqlite')),
-  searchSyncSessions: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(50),
-  searchSyncBudgetMs: z.natural().min(1).max(60_000).default(3000),
-  maxMessageChars: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(20_000),
-  includeSubagents: z.boolean().default(false),
-  transcriptMaxBytes: z
-    .natural()
-    .min(1)
-    .max(Number.MAX_SAFE_INTEGER)
-    .default(8 * 1024 * 1024),
-  transcriptMaxFiles: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(20),
-  transcriptTtlSeconds: z.natural().min(1).max(2_147_483).default(3600),
-  transcriptChunkChars: z.natural().min(64).max(65_536).default(1024)
+  allowCrossWorkspace: z.boolean().default(false).description('Allow messaging a session recorded under a different working directory. Off by default.'),
+  includeSubagents: z.boolean().default(false).description('Show subagent sessions in list, inspect, inbox, and search results. Delivery to subagents stays refused.'),
+  maxListRows: z.natural().min(1).max(9_999).default(50).description('Maximum rows one list, inspect, inbox, or search page may return.')
 })
 
 /** Model-facing collaboration guidance for fleet tools. */
@@ -341,8 +312,8 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
           async execute(args, exec) {
             callingAgent(exec.agent, 'search_sessions')
             const limit = args.limit ?? Math.min(10, config.maxListRows)
-            const index = new SessionSearchIndex(config.searchIndexPath)
-            index.sync({ maxSessions: config.searchSyncSessions, budgetMs: config.searchSyncBudgetMs })
+            const index = new SessionSearchIndex()
+            index.sync(SEARCH_SYNC)
             return index.search(args.query, { limit })
           }
         })
@@ -454,7 +425,7 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
               if (snapshot.session.id !== caller.id) throw new Error('Coordination history returned a different session')
               history = snapshot.events
             }
-            const message = preparePeerMessage(caller.id, asBrand<SessionId>(args.session_id), args.message, config.maxMessageChars, history)
+            const message = preparePeerMessage(caller.id, asBrand<SessionId>(args.session_id), args.message, MAX_MESSAGE_CHARS, history)
             const resolved = await ctx.sessionController.resolveAgent(asBrand<SessionId>(args.session_id))
             if ('error' in resolved) throw new Error(errorText(resolved.error))
             const target = resolved.agent
@@ -512,7 +483,12 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
 export async function apply(ctx: Context, options: Config): Promise<void> {
   const config = Config(options) as Required<Config>
   const transcripts = new TranscriptStore(
-    { maxBytes: config.transcriptMaxBytes, maxFiles: config.transcriptMaxFiles, ttlSeconds: config.transcriptTtlSeconds, chunkChars: config.transcriptChunkChars },
+    {
+      maxBytes: TRANSCRIPT_LIMITS.maxBytes,
+      maxFiles: TRANSCRIPT_LIMITS.maxFiles,
+      ttlSeconds: TRANSCRIPT_LIMITS.ttlSeconds,
+      chunkChars: TRANSCRIPT_LIMITS.chunkChars
+    },
     error => ctx.logger.warn('Session Fleet transcript cleanup failed: %s', String(error))
   )
   ctx.effect(() => () => transcripts.dispose(), 'tool-session-fleet.transcripts()')

@@ -8,13 +8,5 @@
       name: 'dsh-plugin-session-fleet'
       config:
         allowCrossWorkspace: false
-        maxListRows: 50
-        maxMessageChars: 20000
         includeSubagents: false
-        transcriptMaxBytes: 8388608
-        transcriptMaxFiles: 20
-        transcriptTtlSeconds: 3600
-        transcriptChunkChars: 1024
-        searchCursorMaxEntries: 100
-        searchCursorTtlSeconds: 300
-        searchCursorMaxSessions: 10000
+        maxListRows: 50

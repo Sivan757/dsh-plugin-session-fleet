@@ -6,6 +6,7 @@ import type { UserMessage } from '@deepseek-ai/dsh-llm'
 import type { SessionId } from '@deepseek-ai/dsh-session'
 import { isCurrentFleetFrame, peerMessageSummary, isFleetFrame, revisePeerMessage, reframePeerMessage } from './coordination.ts'
 import type { Config } from './index.ts'
+import { MAX_MESSAGE_CHARS } from './limits.ts'
 
 export const inboxParameters = {
   session_id: { type: 'string', required: true, description: 'Session whose pending peer inbox is inspected or changed.' },
@@ -152,7 +153,7 @@ export async function manageInbox(ctx: Context, caller: Agent, config: Required<
     const selected = args.message_id === undefined ? pending : pending.filter(item => item.message.id === args.message_id)
     const items = selected.slice(offset, offset + limit).map(({ message, delivery }) => {
       const coordination = message.source.coordination
-      const summary = peerMessageSummary(message, args.message_id === undefined ? 800 : config.maxMessageChars)
+      const summary = peerMessageSummary(message, args.message_id === undefined ? 800 : MAX_MESSAGE_CHARS)
       const completion =
         coordination?.reply_to === undefined || coordination.kind === 'complete'
           ? undefined
@@ -218,7 +219,7 @@ export async function manageInbox(ctx: Context, caller: Agent, config: Required<
   if (pendingRevision(current) !== args.expected_revision) throw new Error('Pending message changed; inspect its current revision before retrying')
   if (current.source.kind !== 'session-fleet' || (current.source.senderSessionId !== caller.id && (action === 'replace' || id !== caller.id)))
     throw new Error('Pending message ownership changed')
-  const revised = action === 'replace' ? revisePeerMessage(current, args.text!, config.maxMessageChars) : undefined
+  const revised = action === 'replace' ? revisePeerMessage(current, args.text!, MAX_MESSAGE_CHARS) : undefined
   const changed = revised === undefined ? agent.inbox.remove(current.id) : agent.inbox.replace(current.id, revised)
   if (!changed) throw new Error('Message is no longer pending; inspect before retrying')
   let persistence: 'acknowledged' | 'unknown' = 'unknown'

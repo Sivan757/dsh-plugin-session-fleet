@@ -199,7 +199,7 @@ describe('fleet location and list boundaries', () => {
 
   it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid configured row limit %s', maxListRows => {
     expect(() => fleet.Config({ maxListRows })).toThrow()
-    expect(() => fleet.Config({ maxMessageChars: maxListRows })).toThrow()
+    expect(() => fleet.Config({ allowCrossWorkspace: 'yes' as unknown as boolean })).toThrow()
   })
 })
 
@@ -990,10 +990,10 @@ describe('session-fleet apply defaults and re-entry', () => {
   })
 })
 
-describe('session-fleet partial config defaults', () => {
-  it('falls back message bound per key with a partial config', async () => {
-    const { ctx, lead } = await setup({ allowCrossWorkspace: true, maxMessageChars: 5 })
-    expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-foreign', message: 'x'.repeat(6) }), 'exceeds 5 characters')
+describe('session-fleet message bound', () => {
+  it('refuses a message above the fixed character bound', async () => {
+    const { ctx, lead } = await setup({ allowCrossWorkspace: true })
+    expectToolError(await execute(ctx, lead, 'send_to_session', { session_id: 'fleet-foreign', message: 'x'.repeat(20001) }), 'exceeds 20000 characters')
   })
 })
 
