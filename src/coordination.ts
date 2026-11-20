@@ -198,10 +198,31 @@ export function peerMessageBody(message: UserMessage): readonly ContentBlock[] {
 }
 
 /** Read the actual pending payload, including manual UI edits outside the coordination record. */
+function sameRecord(left: Record<string, unknown>, right: Record<string, unknown>): boolean {
+  const keys = Object.keys(left).sort()
+  if (keys.length !== Object.keys(right).length) return false
+  return keys.every(key => JSON.stringify(left[key]) === JSON.stringify(right[key]))
+}
+
+/** The payload may carry transport fields the source record does not store. */
+function payloadMatchesCoordination(body: readonly ContentBlock[], coordination: CoordinationRecord | undefined): boolean {
+  if (coordination === undefined) return true
+  const first = body[0]
+  if (body.length !== 1 || first?.type !== 'text') return false
+  try {
+    const parsed = JSON.parse(first.text) as Record<string, unknown>
+    delete parsed.messageId
+    delete parsed.reply
+    return sameRecord(parsed, coordination as unknown as Record<string, unknown>)
+  } catch {
+    return false
+  }
+}
+
 export function peerMessageSummary(message: UserMessage, max: number) {
   const body = peerMessageBody(message)
   const coordination = message.source.kind === 'session-fleet' ? message.source.coordination : undefined
-  const matches = coordination === undefined || (body.length === 1 && body[0]?.type === 'text' && body[0].text === JSON.stringify(coordination))
+  const matches = payloadMatchesCoordination(body, coordination)
   return {
     ...textPreview(coordination !== undefined && matches ? [{ type: 'text', text: coordination.summary }] : body, max, '\n'),
     ...(matches ? {} : { bodyEdited: true as const })

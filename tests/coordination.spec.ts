@@ -50,6 +50,11 @@ it.each(['legacy', 'current'] as const)('preserves a %s preface coalesced with i
   expect(peerMessageSummary(coalesced, 2000)).toEqual({ text: proposal.summary })
 })
 
+it('treats a framed payload as authoritative instead of a manual edit', () => {
+  const original = propose()
+  expect(peerMessageSummary(original, 2000)).toEqual({ text: proposal.summary })
+})
+
 it('shows a manual payload edit instead of repeating stale structured metadata', () => {
   const original = propose()
   const manual = { ...original, content: [original.content[0]!, { type: 'text' as const, text: 'Edited in the receiving UI: keep this new finding.' }] }

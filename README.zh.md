@@ -14,7 +14,7 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 ## 0.5.0 之后的未发布变更
 
-移除 `search_sessions`：默认部署把宿主 session-query 服务挂成 `openAt: never`，该工具必然失败；而启用索引的部署本就有宿主 `session_search`，`list_sessions` 的标题查询可在无索引时覆盖发现需求。注入的协作策略从约 4,200 字符压到约 320 字符，语义不变。
+重新提供 `search_sessions`（实现已更换）：默认部署把宿主 session-query 服务挂成 `openAt: never`，旧实现必然失败；而启用索引的部署本就有宿主 `session_search`，`list_sessions` 的标题查询可在无索引时覆盖发现需求。注入的协作策略从约 4,200 字符压到约 320 字符，语义不变。
 
 协作触发条件现在置于注入策略最前：当已知或怀疑另一会话存在未完成工作时，共享操作（改动对方文件、使用共享 Git 暂存区、全仓格式化或校验、重挂共享运行时、独占资源）必须完成 发现 → 检查 → 提案 → 获得同意，且不得与该检查并行执行。`send_to_session.message` 的结构化对象分支排在纯字符串之前，描述要求传入带 `kind` 的对象而非 JSON 文本。`accept` 和 `release` 分支的工具 schema 不再暴露 `next` 属性；运行时行为不变（`block`、`update`、`complete` 仍可用 `next`）。`evals/` 目录新增真实模型行为评测套件（见开发一节）。
 
@@ -36,6 +36,7 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 ## 每个智能体安装的工具
 
+- `search_sessions` 对持久会话索引（`searchIndexPath`，默认 `~/.dsh/storages/session-query.sqlite`）执行一次字面全文查询，返回命中的会话、带高亮的片段、`seq`、事件类型、cwd 与 `totalMatches`。`query` 中的多个词按 AND 组合；`limit` 限制返回会话数，`cwd` 按工作目录前缀过滤。只读，毫秒级返回；但索引是快照、在调用之外刷新，因此最近的对话可能缺失。
 - `list_sessions`：列出可见会话及状态、活跃时间与工作目录，不会激活任何目标。可选 `query` 按标题做不区分大小写的字面子串匹配，接受 1–500 个 UTF-16 代码单元，不依赖全文索引。默认数量取 20 与 `maxListRows` 的较小值；`hiddenSubagentSessions` 只统计所有权隐藏，与 cwd 过滤无关。
 - `inspect_session` 默认 `mode: "outline"`，返回截断概览、宿主可提供的原始 `source.location` 和可执行的 `detailAccess` 示例。用 `mode: "search"` 与 `query` 查询会话内事件，再用 `mode: "read"` 与 `seq` 读取顶层正文、完整原始事件及有界相邻摘要。用 `mode: "calls"` 在不加载正文的情况下定位工具输入、结果和失败项。原有私有文本投影仅在概览模式显式传 `transcript: true` 时导出。
 - `manage_session_inbox`：不激活目标即可查看待处理的对等输入，也可按原生 ID 与期望版本原位更新或撤回一条待处理消息。普通用户输入与已消费历史受到保护，详见待处理消息管理。
