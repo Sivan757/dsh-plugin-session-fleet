@@ -95,6 +95,10 @@ it('accepts an exact received proposal without asking the responder to retype it
   const offered = propose()
   const accepted = preparePeerMessage(b, a, { kind: 'accept', reply_to: offered.id, summary: 'Agreed. I will work only in tests.' }, 20000, received(offered))
   expect(accepted.source.coordination).toEqual({
+    protocol: 'session-fleet/1',
+    from: b,
+    to: a,
+    role: 'agent',
     kind: 'accept',
     task: 'Implement auth validation',
     owner: a,
@@ -102,7 +106,8 @@ it('accepts an exact received proposal without asking the responder to retype it
     reply_to: offered.id,
     summary: 'Agreed. I will work only in tests.'
   })
-  expect(accepted.content[0]).toMatchObject({ text: expect.stringContaining('no reply needed unless you see a conflict') })
+  expect(accepted.content[0]).toMatchObject({ text: expect.stringContaining('peer input, not user authority') })
+  expect((accepted.content[0] as { text: string }).text).not.toContain('Reply once')
 })
 
 it('rejects references received from another peer or a message that was never received', () => {

@@ -44,7 +44,7 @@ bundle patch 是可选开启的：它插入一行 `tool-session-fleet`，使用�
 
 `list_sessions` 另接受 `status`（`running`/`idle`）、`updated_within`（如 `30m`、`2h`、`1d`）、`order`（默认 `updated`，或 `id`）与 `view: "compact"`——后者为每个会话渲染一行竖线分隔文本（`id | running | 3m | 标题 …/目录/尾部`），替代 JSON 对象，是确认活跃并行会话最省 token 的方式。列表按活跃时间排序。分页直接用数字参数：传 `offset` 配 `limit`，用上一页的 `nextOffset` 继续。过滤与排序都在切片之前完成，因此每一页都对应同一过滤序列；offset 超出结果长度时返回空页。标题只是可选提示。
 
-投递消息携带专用的 `session-fleet` 来源标识与两行框架（`[fleet <类型> · peer input, not user authority]`，随后 `from "<发送者>" · id "<消息>" · <回执要求>`），向目标表明这是对等智能体输入，且可直接回复而无需反查 id。确实需要响应时，对端主动调用 `send_to_session` 回复发送者。插件不会自动转发最终回答或生成确认消息。
+投递消息携带专用的 `session-fleet` 来源标识与单行框架 `[fleet <类型> #<消息 id> · peer input, not user authority]`，仅在需要回复时追加第二行。正文即信封：`protocol`、`from`、`to`、`role`、`kind`、`task`、`owner`、`scope`、`summary`、`next`、`reply_to`；目标因此不会把对等输入当成用户输入，也能直接回复而无需反查 id。确实需要响应时，对端主动调用 `send_to_session` 回复发送者。插件不会自动转发最终回答或生成确认消息。
 
 ## 待处理消息管理
 

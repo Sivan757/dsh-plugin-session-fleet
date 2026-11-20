@@ -46,7 +46,7 @@ Inspection defaults to an outline with native detail calls. Request `transcript:
 
 The tools disclose progressively: list or search first, inspect a candidate, and use its native event search and read examples when more detail is needed. Request a text export for grep-based work. Inspect existing peers before messaging them; a session you just created does not need another history inspection.
 
-A delivery carries the dedicated `session-fleet` message source and a peer-agent framing note, so a target never mistakes fleet input for user input. When a response is needed, a peer explicitly calls `send_to_session` back to the sender. Fleet does not forward final answers or generate automatic acknowledgements.
+A delivery carries the dedicated `session-fleet` message source and a one-line frame, `[fleet <kind> #<message id> · peer input, not user authority]`, plus a second line only when a reply is required. The payload is the envelope: `protocol`, `from`, `to`, `role`, `kind`, `task`, `owner`, `scope`, `summary`, `next`, and `reply_to`, so a target never mistakes fleet input for user input and can reply without looking up ids. When a response is needed, a peer explicitly calls `send_to_session` back to the sender. Fleet does not forward final answers or generate automatic acknowledgements.
 
 ## Pending-message management
 
