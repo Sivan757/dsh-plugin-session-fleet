@@ -1,9 +1,8 @@
 /** Scoped model-facing tools for discovering, reading, creating, and messaging DSH sessions. */
 
-import { DatabaseSync } from 'node:sqlite'
-import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { SessionSearchIndex } from './search-index.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { literalQuery } from './discovery.ts'
 import { TranscriptStore } from './transcript.ts'
@@ -46,8 +45,12 @@ export interface Config {
   readonly allowCrossWorkspace?: boolean
   /** Upper bound of one list_sessions response. */
   readonly maxListRows?: number
-  /** Absolute path to the durable session-search index, read once per search_sessions call. */
+  /** Absolute path to the plugin-owned session-search index built by search_sessions. */
   readonly searchIndexPath?: string
+  /** Maximum sessions reindexed per search_sessions call. */
+  readonly searchSyncSessions?: number
+  /** Wall-clock budget in milliseconds for one incremental reindex pass. */
+  readonly searchSyncBudgetMs?: number
   /** Upper bound of one send_to_session message body in UTF-16 code units. */
   readonly maxMessageChars?: number
   /** Expose subagent-owned sessions to list, search, and read. Delivery stays refused. */
@@ -66,7 +69,9 @@ export interface Config {
 export const Config: z<Config> = z.object({
   allowCrossWorkspace: z.boolean().default(false),
   maxListRows: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(50),
-  searchIndexPath: z.string().default(join(homedir(), '.dsh/storages/session-query.sqlite')),
+  searchIndexPath: z.string().default(join(homedir(), '.dsh/storages/session-fleet-search.sqlite')),
+  searchSyncSessions: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(50),
+  searchSyncBudgetMs: z.natural().min(1).max(60_000).default(3000),
   maxMessageChars: z.natural().min(1).max(Number.MAX_SAFE_INTEGER).default(20_000),
   includeSubagents: z.boolean().default(false),
   transcriptMaxBytes: z
@@ -102,11 +107,10 @@ const SEARCH_HIT_SCHEMA = {
   additionalProperties: false,
   properties: {
     sessionId: { type: 'string', required: true },
-    createdAt: { type: 'number', required: true },
+    updatedAt: { type: 'number', required: true },
     seq: { type: 'integer', required: true },
     type: { type: 'string', required: true },
-    snippet: { type: 'string', required: true },
-    cwd: { type: 'string' }
+    snippet: { type: 'string', required: true }
   }
 } as const
 
@@ -331,49 +335,15 @@ function install(agent: Agent, ctx: Context, config: Required<Config>, transcrip
             'Search the durable local session index full text and return matching sessions with snippets, read-only and fast. Answers "where did I discuss X". The index is refreshed by the host between searches, so very recent turns may be missing; use list_sessions for titles and inspect_session for one session.',
           parameters: {
             query: { type: 'string', required: true, description: 'Words to match; separate terms are combined with AND.' },
-            limit: { type: 'integer', description: 'Sessions to return, 1 through ' + config.maxListRows + '. Defaults to 10.' },
-            cwd: { type: 'string', description: 'Only sessions whose recorded working directory starts with this absolute path.' }
+            limit: { type: 'integer', description: 'Sessions to return, 1 through ' + config.maxListRows + '. Defaults to 10.' }
           },
           output: jsonOutput(SEARCH_VALUE_SCHEMA),
           async execute(args, exec) {
             callingAgent(exec.agent, 'search_sessions')
-            const indexPath = config.searchIndexPath
-            if (!existsSync(indexPath)) throw new Error('session index not found at ' + indexPath)
-            const terms = args.query
-              .trim()
-              .split(/\s+/)
-              .filter(term => term.length > 0)
-              .slice(0, 8)
-            if (terms.length === 0) throw new Error('query must contain at least one term')
-            if (args.limit !== undefined && !positiveInt(args.limit, config.maxListRows)) {
-              throw new Error('limit must be an integer from 1 through ' + config.maxListRows)
-            }
-            const match = terms.map(term => '"' + term.replaceAll('"', '""') + '"').join(' ')
             const limit = args.limit ?? Math.min(10, config.maxListRows)
-            const db = new DatabaseSync(indexPath, { readOnly: true })
-            try {
-              const rows = db
-                .prepare(
-                  'SELECT s.id AS sessionId, s.cwd AS cwd, s.created_at AS createdAt, d.seq AS seq, d.type AS type, ' +
-                    "snippet(persisted_docs, 0, '[', ']', '…', 16) AS snippet " +
-                    'FROM persisted_docs d JOIN persisted_sessions s ON s.id = d.session_id ' +
-                    'WHERE persisted_docs MATCH ? ORDER BY rank LIMIT ?'
-                )
-                .all(match, limit * 4) as Array<{ sessionId: string; cwd: string | null; createdAt: number; seq: number; type: string; snippet: string }>
-              const seen = new Set<string>()
-              const hits: Array<{ sessionId: string; createdAt: number; seq: number; type: string; snippet: string; cwd?: string }> = []
-              for (const row of rows) {
-                if (seen.has(row.sessionId)) continue
-                if (args.cwd !== undefined && !(row.cwd ?? '').startsWith(args.cwd)) continue
-                seen.add(row.sessionId)
-                hits.push({ sessionId: row.sessionId, createdAt: row.createdAt, seq: row.seq, type: row.type, snippet: row.snippet, ...(row.cwd === null ? {} : { cwd: row.cwd }) })
-                if (hits.length >= limit) break
-              }
-              const total = (db.prepare('SELECT count(*) AS c FROM persisted_docs WHERE persisted_docs MATCH ?').get(match) as { c: number }).c
-              return { hits, totalMatches: total }
-            } finally {
-              db.close()
-            }
+            const index = new SessionSearchIndex(config.searchIndexPath)
+            index.sync({ maxSessions: config.searchSyncSessions, budgetMs: config.searchSyncBudgetMs })
+            return index.search(args.query, { limit })
           }
         })
       )
